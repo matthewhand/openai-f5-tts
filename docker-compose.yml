@@ -1,0 +1,25 @@
+services:
+  openai-f5-tts:
+    build: .
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all  # Use all available GPUs
+      - API_KEY=${API_KEY:-your_api_key_here}
+      - PORT=5060  # Ensure port alignment
+      - DEFAULT_VOICE=${DEFAULT_VOICE:-Emilia_ZH_EN}
+      - REQUIRE_API_KEY=${REQUIRE_API_KEY:-True}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: ${OLLAMA_GPU_DRIVER-nvidia}  # Specify GPU driver
+              count: 1  # Use 1 GPU; change to 'all' if multiple are needed
+              capabilities: [gpu]
+    ports:
+      - '5060:5060'
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./ckpts:/app/ckpts
+
