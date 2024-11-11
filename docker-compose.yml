@@ -1,5 +1,5 @@
 services:
-  openai-f5-tts:
+  app:
     build: .
     runtime: nvidia
     environment:
@@ -22,4 +22,4 @@ services:
     restart: unless-stopped
     volumes:
       - ./ckpts:/app/ckpts
-
+    command: /bin/sh -c "python3 /app/test.py && python3 /app/server.py"

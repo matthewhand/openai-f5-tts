@@ -153,8 +153,8 @@ Lists all supported voices, regardless of language.
 ## TODO
 
 - [x] Expose OpenAI-compatible endpoint
+- [x] Fix Docker + CUDA compatibility
 - [ ] Add expression parsing for nuanced speech
 - [ ] Document usage for fine-tuned models
-- [ ] Fix Docker + CUDA compatibility
 - [ ] Enhance error handling and logging
 
