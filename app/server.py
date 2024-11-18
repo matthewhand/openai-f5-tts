@@ -37,15 +37,36 @@ API_KEY = os.getenv('API_KEY', 'your_api_key_here')
 DEFAULT_VOICE = os.getenv('DEFAULT_VOICE', 'Emilia')
 DEFAULT_RESPONSE_FORMAT = os.getenv('DEFAULT_RESPONSE_FORMAT', 'mp3')
 DEFAULT_SPEED = float(os.getenv('DEFAULT_SPEED', 1.0))
+DEBUG_MODE = os.getenv('DEBUG_MODE', 'false').lower() in ('true', '1', 'yes')
 PORT = args.port
 
 # Set up logging configuration
-logging.basicConfig(level=logging.INFO)
+if DEBUG_MODE:
+    logging.basicConfig(level=logging.DEBUG)
+    logging.debug("Debug mode is enabled.")
+else:
+    logging.basicConfig(level=logging.INFO)
+logging.info(f"Debug mode is {'enabled' if DEBUG_MODE else 'disabled'}.")
 
-# Initialize TTSHandler with CLI arguments
+# Middleware for logging HTTP requests in debug mode
+@app.before_request
+def log_request_info():
+    if DEBUG_MODE:
+        # Redact Authorization header
+        redacted_headers = {k: ('***' if 'authorization' in k.lower() else v)
+                            for k, v in request.headers.items()}
+        logging.debug(f"HTTP Request: {request.method} {request.url}")
+        logging.debug(f"Headers: {redacted_headers}")
+        if request.is_json:
+            logging.debug(f"Payload: {request.json}")
+        else:
+            logging.debug("Payload: Non-JSON or empty.")
+
+# Initialize TTSHandler with CLI arguments and DEFAULT_VOICE
 tts_handler = TTSHandler(
     retain_cache=args.retain_cache,
-    disable_pcm_normalization=args.disable_pcm_normalization
+    disable_pcm_normalization=args.disable_pcm_normalization,
+    default_voice=DEFAULT_VOICE
 )
 
 @app.route('/v1/audio/speech', methods=['POST'])
@@ -56,7 +77,7 @@ def text_to_speech():
 
     Expects a JSON body with the following fields:
       - input: The text to convert to speech.
-      - voice: (Optional) The speaker's name. Defaults to 'Emilia'.
+      - voice: (Optional) The speaker's name. Defaults to the DEFAULT_VOICE.
       - response_format: (Optional) Desired audio format. Defaults to 'mp3'.
       - speed: (Optional) Speed adjustment factor. Defaults to 1.0.
 
@@ -149,6 +170,18 @@ def list_all_voices():
     models = tts_handler.list_available_models()
     voices = [model['name'] for model in models]
     return jsonify({"voices": voices})
+
+@app.route('/v1/loaded_models', methods=['GET'])
+@require_api_key
+def get_loaded_models():
+    """
+    List currently loaded TTS models.
+
+    Returns:
+        JSON response with loaded models.
+    """
+    loaded = list(tts_handler.loaded_models.keys())
+    return jsonify({"loaded_models": loaded})
 
 if __name__ == '__main__':
     logging.info(f"F5-TTS API running on http://localhost:{PORT}")

@@ -1,6 +1,8 @@
 import torch
 import logging
 from safetensors.torch import load_file
+# Assuming VocoderClass is defined elsewhere or needs to be imported
+from vocoder_module import VocoderClass  # Replace with actual import
 
 def load_model(model_class, config, model_path):
     """
@@ -53,19 +55,35 @@ def load_model(model_class, config, model_path):
     return model
 
 def load_vocoder(vocoder_name="vocos", is_local=True, local_path=None):
+    """
+    Load the specified vocoder.
+
+    Args:
+        vocoder_name (str): Name of the vocoder to load ('vocos' or 'bigvgan').
+        is_local (bool): Whether to load the vocoder from a local path.
+        local_path (str): Path to the local vocoder model.
+
+    Returns:
+        vocoder: The loaded vocoder object.
+
+    Raises:
+        ValueError: If an unsupported vocoder name is provided.
+    """
     if vocoder_name == "vocos":
-        if is_local:
+        if is_local and local_path:
             # Load local vocoder
             logging.info(f"Loading VOCOS vocoder from local path: {local_path}")
             return VocoderClass.from_pretrained(local_path)
         else:
             # Load vocoder from external resource
+            logging.info("Loading VOCOS vocoder from external resource.")
             return VocoderClass.from_pretrained("charactr/vocos-mel-24khz")
     elif vocoder_name == "bigvgan":
-        if is_local:
+        if is_local and local_path:
             logging.info(f"Loading BigVGAN vocoder from local path: {local_path}")
             return VocoderClass.from_pretrained(local_path)
         else:
+            logging.info("Loading BigVGAN vocoder from external resource.")
             return VocoderClass.from_pretrained("charactr/bigvgan_v2_24khz_100band_256x")
     else:
         raise ValueError(f"Unsupported vocoder name: {vocoder_name}")

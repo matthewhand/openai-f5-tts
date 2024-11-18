@@ -420,9 +420,11 @@ class TTSHandler:
             raise ValueError(f"Voice '{voice}' is not available.")
 
         try:
+            # Load the requested voice model (prioritize this model)
             model = self.load_voice_model(voice)
             logging.info(f"Using model for voice: {voice}")
 
+            # Perform inference
             sample_rate, audio_data = self.infer(text, voice, model)
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=f".{response_format}")
             sf.write(temp_file.name, audio_data, sample_rate)
