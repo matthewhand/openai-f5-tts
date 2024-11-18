@@ -92,7 +92,7 @@ def text_to_speech():
 
     # Extract parameters from request body with defaults
     text = data.get('input')
-    voice = data.get('voice', DEFAULT_VOICE)
+    voice = data.get('voice') or DEFAULT_VOICE  # Use DEFAULT_VOICE if not provided or empty
     response_format = data.get('response_format', DEFAULT_RESPONSE_FORMAT)
     speed = float(data.get('speed', DEFAULT_SPEED))
 
