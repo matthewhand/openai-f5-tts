@@ -167,3 +167,4 @@ cython_debug/
 *.wav
 *.txt
 *.pt
+F5-TTS/
