@@ -58,16 +58,12 @@ This project provides a Flask-based API for generating high-quality text-to-spee
 
 5. **Download Reference Audio**
 
-   To enable automatic reference transcription, download the example reference audio file:
+   Download the example reference audio file:
 
    ```bash
-   curl -O https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
-   ```
-
-   Then, update `REF_AUDIO_PATH` in `.env`:
-
-   ```plaintext
-   REF_AUDIO_PATH=basic_ref_en.wav
+   cd ref_audio
+   curl -L -o Emilia.wav https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
+   cd ..
    ```
 
 6. **Download Default F5-TTS Voice Models**
@@ -75,8 +71,8 @@ This project provides a Flask-based API for generating high-quality text-to-spee
    Navigate to the `ckpts` directory and download the default F5-TTS models. This step provides base voices, including "Emilia."
 
    ```bash
-   cd ckpts
    git clone https://huggingface.co/SWivid/F5-TTS
+   mv F5-TTS/F5TTS_Base ckpts/Emilia # use move not mv on Windows
    ```
 
 7. **Run the Flask Application**
@@ -150,11 +146,59 @@ Lists all supported voices, regardless of language.
 - **Headers**: `Authorization: Bearer <API_KEY>`
 - **Response**: JSON containing all supported voices.
 
+## Adding Your Own Fine-Tuned Checkpoint
+
+After using the official F5-TTS Gradio app to fine-tune a model, you can integrate your checkpoint into this project:
+
+1. **Create a Directory for Your Voice Model**
+
+   In the `ckpts/` directory, create a new folder for your voice (e.g., `Chris`).
+
+   ```bash
+   mkdir ckpts/Chris
+   ```
+
+2. **Add Your Checkpoint File**
+
+   Place the `model_1200000.pt` file from your fine-tuning into the new folder:
+
+   ```bash
+   mv path_to_your_checkpoint/model_1200000.pt ckpts/Chris/
+   ```
+
+3. **Provide Reference Audio**
+
+   Add a reference audio file for your voice in the `ref_audio/` directory. Ensure the file name matches the voice directory name:
+
+   ```bash
+   mv path_to_ref_audio/Chris.wav ref_audio/
+   ```
+
+4. **First Run**
+
+   On the first run, the application will automatically convert the `.pt` file into a `.safetensors` file for efficiency and security. Subsequent runs will use the `.safetensors` file.
+
+5. **Use Your Voice**
+
+   To generate speech with your custom model, specify the voice in the API call:
+
+   ```bash
+   curl -X POST http://localhost:5060/v1/audio/speech \
+        -H "Authorization: Bearer <API_KEY>" \
+        -H "Content-Type: application/json" \
+        -d '{
+              "input": "Hello world",
+              "voice": "Chris",
+              "response_format": "mp3",
+              "speed": 1.0
+            }' > output.mp3
+   ```
+
 ## TODO
 
 - [x] Expose OpenAI-compatible endpoint
 - [x] Fix Docker + CUDA compatibility
+- [x] Multiple voice models
 - [ ] Add expression parsing for nuanced speech
 - [ ] Document usage for fine-tuned models
 - [ ] Enhance error handling and logging
-
