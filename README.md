@@ -53,8 +53,6 @@ git clone https://github.com/matthewhand/openai-f5-tts
 cd openai-f5-tts
 ```
 
-*Note: Cloning the repository may take a few minutes or longer depending on your internet connection.*
-
 **Step 3: Download Required Voice Models**
 
 Ensure you have downloaded the necessary voice models and reference audio file:
