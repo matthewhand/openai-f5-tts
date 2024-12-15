@@ -22,4 +22,5 @@ services:
     restart: unless-stopped
     volumes:
       - ./ckpts:/app/ckpts
+      - ./ref_audio:/app/ref_audio
     command: /bin/sh -c "python3 /app/test.py && python3 /app/server.py"
