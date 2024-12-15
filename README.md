@@ -1,15 +1,16 @@
 # openai-f5-tts
 
+<img src="assets/images/logo.webp" alt="Project Logo" width="200"/>
+
 This project provides a Flask-based API for generating high-quality text-to-speech (TTS) audio using F5-TTS, a flexible and powerful TTS engine. The API supports customizable voices, including the default voice Emilia, and allows for easy integration into applications requiring speech synthesis.
 
-## Setup Instructions
+---
 
-### Prerequisites
+## Deployment Instructions
 
-- Python 3.10
-- `conda` or `venv` (optional) for creating an isolated Python environment
+### Using Docker Compose (Recommended for Deployment)
 
-### Installation
+This method simplifies deployment by encapsulating the entire application, including dependencies, into a Docker container.
 
 1. **Clone the Repository**
 
@@ -18,72 +19,118 @@ This project provides a Flask-based API for generating high-quality text-to-spee
    cd openai-f5-tts
    ```
 
-2. **Set Up Environment**
+2. **Set Up Environment Variables**
 
-   Follow the F5-TTS setup for compatibility by creating a Python 3.10 environment, then install PyTorch and torchaudio with CUDA support if required.
-
-   ```bash
-   # Create a Python 3.10 conda environment
-   conda create -n f5-tts python=3.10
-   conda activate f5-tts
-
-   # Install PyTorch and torchaudio with CUDA 11.8 support (or your CUDA version)
-   pip install torch==2.3.0+cu118 torchaudio==2.3.0+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
-   ```
-
-3. **Install Dependencies**
-
-   Install the remaining dependencies from the requirements file.
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Environment Variables**
-
-   Copy `.env.example` to `.env` and update as needed. Ensure that `REF_AUDIO_PATH` points to a reference audio file (detailed in the steps below).
+   Copy `.env.example` to `.env` and update it as needed:
 
    ```bash
    cp .env.example .env
    ```
 
    Key environment variables:
-
    - `API_KEY`: Set this to secure API access.
-   - `PORT`: The port for the Flask server (default is 5060).
-   - `REQUIRE_API_KEY`: Set to `True` to require API key authentication.
-   - `DEFAULT_VOICE`: Default voice name (default is “Emilia,” which points to the default F5-TTS model).
-   - `DEFAULT_RESPONSE_FORMAT`: The output audio format (e.g., “mp3”).
-   - `DEFAULT_SPEED`: Speech speed adjustment factor.
+   - `PORT`: The port for the Flask server (default is `5060`).
+   - `REQUIRE_API_KEY`: Set to `True` to enforce API key authentication.
+   - `DEFAULT_VOICE`: Default voice name (e.g., "Emilia").
+   - `DEFAULT_RESPONSE_FORMAT`: Output audio format (e.g., `mp3`).
 
-5. **Download Reference Audio**
+3. **Run the Application**
 
-   Download the example reference audio file:
-
+   Use Docker Compose to build and start the service:
    ```bash
-   cd ref_audio
-   curl -L -o Emilia.wav https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
-   cd ..
+   docker-compose up --build -d
    ```
 
-6. **Download Default F5-TTS Voice Models**
+4. **Access the API**
 
-   Navigate to the `ckpts` directory and download the default F5-TTS models. This step provides base voices, including "Emilia."
+   The API will be available at `http://localhost:5060` by default.
+
+5. **Manage the Service**
+
+   - Stop the service:
+     ```bash
+     docker-compose down
+     ```
+   - Restart the service:
+     ```bash
+     docker-compose up -d
+     ```
+
+---
+
+## Development Setup
+
+If you are developing or contributing to this project, the following method allows for a more flexible setup.
+
+### Prerequisites
+
+- Python 3.10
+- `conda` (recommended) or `venv` for creating an isolated Python environment
+
+### Installation Steps
+
+1. **Clone the Repository**
 
    ```bash
-   git clone https://huggingface.co/SWivid/F5-TTS
-   mv F5-TTS/F5TTS_Base ckpts/Emilia # use move not mv on Windows
+   git clone https://github.com/matthewhand/openai-f5-tts
+   cd openai-f5-tts
    ```
 
-7. **Run the Flask Application**
+2. **Create a Python Environment**
 
-   After completing setup, start the Flask server:
+   Set up a Python 3.10 environment using Conda or virtual environments:
 
+   ```bash
+   conda create -n f5-tts python=3.10
+   conda activate f5-tts
+   ```
+
+3. **Install PyTorch and Torchaudio**
+
+   Install PyTorch and torchaudio with CUDA support (adjust for your CUDA version):
+   ```bash
+   pip install torch==2.3.0+cu118 torchaudio==2.3.0+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
+   ```
+
+4. **Install Project Dependencies**
+
+   Install the required Python packages:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+5. **Set Up Environment Variables**
+
+   Copy `.env.example` to `.env` and update the variables as needed:
+   ```bash
+   cp .env.example .env
+   ```
+
+6. **Download Required Files**
+
+   - **Reference Audio**:
+     ```bash
+     mkdir -p ref_audio
+     curl -L -o ref_audio/Emilia.wav https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
+     ```
+
+   - **Voice Models**:
+     ```bash
+     mkdir -p ckpts/Emilia
+     git clone https://huggingface.co/SWivid/F5-TTS
+     mv F5-TTS/F5TTS_Base/* ckpts/Emilia/
+     ```
+
+7. **Run the Application**
+
+   Start the Flask server locally:
    ```bash
    python app/server.py
    ```
 
-   The API will be available at `http://localhost:5060` by default.
+   The API will be accessible at `http://localhost:5060`.
+
+---
 
 ## API Endpoints
 
@@ -96,15 +143,14 @@ Primary route for generating speech from text input. Requires an API key in the 
 - **Headers**: `Authorization: Bearer <API_KEY>`
 - **Data (JSON)**:
   - `input` (string): The text to convert to speech.
-  - `voice` (string, optional): The voice model to use. Defaults to `Emilia`, referencing the stock F5-TTS model.
-  - `response_format` (string, optional): Desired audio format (e.g., `mp3`).
-  - `speed` (float, optional): Speed adjustment factor.
-  - `ref_audio` (string, optional): Reference audio file path.
+  - `voice` (string, optional): Voice model to use (default: "Emilia").
+  - `response_format` (string, optional): Output audio format (default: `mp3`).
+  - `speed` (float, optional): Speech speed adjustment factor.
+  - `ref_audio` (string, optional): Path to a reference audio file.
 
-- **Response**: Audio file in the requested format.
+- **Response**: An audio file in the specified format.
 
-Example usage:
-
+Example:
 ```bash
 curl -X POST http://localhost:5060/v1/audio/speech \
      -H "Authorization: Bearer <API_KEY>" \
@@ -116,6 +162,8 @@ curl -X POST http://localhost:5060/v1/audio/speech \
            "speed": 1.0
          }' > output.mp3
 ```
+
+---
 
 ### `/v1/models`
 
@@ -146,55 +194,50 @@ Lists all supported voices, regardless of language.
 - **Headers**: `Authorization: Bearer <API_KEY>`
 - **Response**: JSON containing all supported voices.
 
-## Adding Your Own Fine-Tuned Checkpoint
-
-After using the official F5-TTS Gradio app to fine-tune a model, you can integrate your checkpoint into this project:
+### Adding Your Own Fine-Tuned Checkpoint
 
 1. **Create a Directory for Your Voice Model**
 
-   In the `ckpts/` directory, create a new folder for your voice (e.g., `Chris`).
-
    ```bash
-   mkdir ckpts/Chris
+   mkdir -p ckpts/MyVoice
    ```
 
-2. **Add Your Checkpoint File**
+2. **Add the Model File**
 
    Place the `model_1200000.pt` file from your fine-tuning into the new folder:
-
    ```bash
-   mv path_to_your_checkpoint/model_1200000.pt ckpts/Chris/
+   mv path_to_your_checkpoint/model_1200000.pt ckpts/MyVoice/
    ```
 
-3. **Provide Reference Audio**
+3. **Add Reference Audio**
 
-   Add a reference audio file for your voice in the `ref_audio/` directory. Ensure the file name matches the voice directory name:
-
+   Add a reference audio file in the `ref_audio/` directory:
    ```bash
-   mv path_to_ref_audio/Chris.wav ref_audio/
+   mv path_to_ref_audio/MyVoice.wav ref_audio/
    ```
 
 4. **First Run**
 
-   On the first run, the application will automatically convert the `.pt` file into a `.safetensors` file for efficiency and security. Subsequent runs will use the `.safetensors` file.
+   The `.pt` file will automatically be converted to `.safetensors` on the first run for efficiency.
 
-5. **Use Your Voice**
+5. **Use the New Voice**
 
-   To generate speech with your custom model, specify the voice in the API call:
-
+   Specify your new voice in API calls:
    ```bash
    curl -X POST http://localhost:5060/v1/audio/speech \
         -H "Authorization: Bearer <API_KEY>" \
         -H "Content-Type: application/json" \
         -d '{
               "input": "Hello world",
-              "voice": "Chris",
+              "voice": "MyVoice",
               "response_format": "mp3",
               "speed": 1.0
             }' > output.mp3
    ```
 
-## TODO
+---
+
+### TODO
 
 - [x] Expose OpenAI-compatible endpoint
 - [x] Fix Docker + CUDA compatibility
