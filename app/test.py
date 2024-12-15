@@ -6,7 +6,7 @@ from tts_handler import TTSHandler
 load_dotenv()
 
 # Fetch the REF_AUDIO_PATH from the environment
-REF_AUDIO_PATH = os.getenv('REF_AUDIO_PATH')
+# REF_AUDIO_PATH = os.getenv('REF_AUDIO_PATH')
 
 # Simple test parameters
 text = "Hello, this is a test."
@@ -16,8 +16,8 @@ speed = 1.0
 
 try:
     # Verify reference audio path
-    if not REF_AUDIO_PATH or not os.path.exists(REF_AUDIO_PATH):
-        raise FileNotFoundError(f"Reference audio file specified in REF_AUDIO_PATH not found: {REF_AUDIO_PATH}")
+    # if not REF_AUDIO_PATH or not os.path.exists(REF_AUDIO_PATH):
+        # raise FileNotFoundError(f"Reference audio file specified in REF_AUDIO_PATH not found: {REF_AUDIO_PATH}")
 
     # Initialize TTSHandler
     tts_handler = TTSHandler(default_voice=voice)
