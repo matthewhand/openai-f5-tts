@@ -1,6 +1,6 @@
 # openai-f5-tts
 
-![Project Logo](assets/images/logo.webp){:width="200px" alt="Project Logo"}
+<img src="assets/images/logo.webp" alt="Project Logo" width="200"/>
 
 Welcome to **openai-f5-tts**! This project provides a user-friendly Flask-based API for generating high-quality text-to-speech (TTS) audio using **F5-TTS**, a flexible and powerful TTS engine. The API supports customizable voices, including the default voice **Emilia**, and allows for easy integration into applications requiring speech synthesis.
 
