@@ -23,4 +23,5 @@ services:
     volumes:
       - ./ckpts:/app/ckpts
       - ./ref_audio:/app/ref_audio
+      - ./cache:/root/.cache
     command: /bin/sh -c "python3 /app/test.py && python3 /app/server.py"
