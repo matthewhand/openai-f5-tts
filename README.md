@@ -19,7 +19,33 @@ This method simplifies deployment by encapsulating the entire application, inclu
    cd openai-f5-tts
    ```
 
-2. **Set Up Environment Variables**
+2. **Download Required Voice Models**
+
+   Ensure you have downloaded the necessary voice models and reference audio file:
+
+   - **Linux/macOS:**
+     ```bash
+     mkdir -p ckpts/Emilia
+     git clone https://huggingface.co/SWivid/F5-TTS
+     mv F5-TTS/F5TTS_Base/* ckpts/Emilia/
+
+     mkdir -p ref_audio
+     curl -L -o ref_audio/Emilia.wav https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
+     ```
+
+   - **Windows (Command Prompt/PowerShell):**
+     ```powershell
+     mkdir ckpts\Emilia
+     git clone https://huggingface.co/SWivid/F5-TTS
+     move F5-TTS\F5TTS_Base\* ckpts\Emilia\
+
+     mkdir ref_audio
+     curl.exe -L -o ref_audio\Emilia.wav https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
+     ```
+
+   **Note:** On Windows, ensure the paths use backslashes (`\`) instead of forward slashes (`/`).
+
+3. **Set Up Environment Variables**
 
    Copy `.env.example` to `.env` and update it as needed:
 
@@ -34,18 +60,18 @@ This method simplifies deployment by encapsulating the entire application, inclu
    - `DEFAULT_VOICE`: Default voice name (e.g., "Emilia").
    - `DEFAULT_RESPONSE_FORMAT`: Output audio format (e.g., `mp3`).
 
-3. **Run the Application**
+4. **Run the Application**
 
    Use Docker Compose to build and start the service:
    ```bash
    docker-compose up --build -d
    ```
 
-4. **Access the API**
+5. **Access the API**
 
    The API will be available at `http://localhost:5060` by default.
 
-5. **Manage the Service**
+6. **Manage the Service**
 
    - Stop the service:
      ```bash
@@ -76,7 +102,20 @@ If you are developing or contributing to this project, the following method allo
    cd openai-f5-tts
    ```
 
-2. **Create a Python Environment**
+2. **Download Required Voice Models**
+
+   Ensure you have downloaded the necessary voice models and reference audio file:
+
+   ```bash
+   mkdir -p ckpts/Emilia
+   git clone https://huggingface.co/SWivid/F5-TTS
+   mv F5-TTS/F5TTS_Base/* ckpts/Emilia/
+
+   mkdir -p ref_audio
+   curl -L -o ref_audio/Emilia.wav https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
+   ```
+
+3. **Create a Python Environment**
 
    Set up a Python 3.10 environment using Conda or virtual environments:
 
@@ -85,41 +124,26 @@ If you are developing or contributing to this project, the following method allo
    conda activate f5-tts
    ```
 
-3. **Install PyTorch and Torchaudio**
+4. **Install PyTorch and Torchaudio**
 
    Install PyTorch and torchaudio with CUDA support (adjust for your CUDA version):
    ```bash
    pip install torch==2.3.0+cu118 torchaudio==2.3.0+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
    ```
 
-4. **Install Project Dependencies**
+5. **Install Project Dependencies**
 
    Install the required Python packages:
    ```bash
    pip install -r requirements.txt
    ```
 
-5. **Set Up Environment Variables**
+6. **Set Up Environment Variables**
 
    Copy `.env.example` to `.env` and update the variables as needed:
    ```bash
    cp .env.example .env
    ```
-
-6. **Download Required Files**
-
-   - **Reference Audio**:
-     ```bash
-     mkdir -p ref_audio
-     curl -L -o ref_audio/Emilia.wav https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
-     ```
-
-   - **Voice Models**:
-     ```bash
-     mkdir -p ckpts/Emilia
-     git clone https://huggingface.co/SWivid/F5-TTS
-     mv F5-TTS/F5TTS_Base/* ckpts/Emilia/
-     ```
 
 7. **Run the Application**
 
