@@ -55,7 +55,7 @@ This method simplifies deployment by encapsulating the entire application, inclu
 
    Key environment variables:
    - `API_KEY`: Set this to secure API access.
-   - `PORT`: The port for the Flask server (default is `5060`).
+   - `PORT`: The port for the Flask server (default is `9090`).
    - `REQUIRE_API_KEY`: Set to `True` to enforce API key authentication.
    - `DEFAULT_VOICE`: Default voice name (e.g., "Emilia").
    - `DEFAULT_RESPONSE_FORMAT`: Output audio format (e.g., `mp3`).
@@ -69,7 +69,7 @@ This method simplifies deployment by encapsulating the entire application, inclu
 
 5. **Access the API**
 
-   The API will be available at `http://localhost:5060` by default.
+   The API will be available at `http://localhost:9090` by default.
 
 6. **Manage the Service**
 
@@ -152,7 +152,7 @@ If you are developing or contributing to this project, the following method allo
    python app/server.py
    ```
 
-   The API will be accessible at `http://localhost:5060`.
+   The API will be accessible at `http://localhost:9090`.
 
 ---
 
@@ -176,7 +176,7 @@ Primary route for generating speech from text input. Requires an API key in the 
 
 Example:
 ```bash
-curl -X POST http://localhost:5060/v1/audio/speech \
+curl -X POST http://localhost:9090/v1/audio/speech \
      -H "Authorization: Bearer <API_KEY>" \
      -H "Content-Type: application/json" \
      -d '{
@@ -248,7 +248,7 @@ Lists all supported voices, regardless of language.
 
    Specify your new voice in API calls:
    ```bash
-   curl -X POST http://localhost:5060/v1/audio/speech \
+   curl -X POST http://localhost:9090/v1/audio/speech \
         -H "Authorization: Bearer <API_KEY>" \
         -H "Content-Type: application/json" \
         -d '{

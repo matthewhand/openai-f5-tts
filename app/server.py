@@ -27,7 +27,7 @@ parser.add_argument(
 parser.add_argument(
     "--port",
     type=int,
-    default=int(os.getenv('PORT', 5060)),
+    default=int(os.getenv('PORT', 9090)),
     help="Port to run the server on."
 )
 args = parser.parse_args()
