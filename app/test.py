@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from tts_handler import generate_speech
+from tts_handler import TTSHandler
 
 # Load environment variables from .env file
 load_dotenv()
@@ -15,12 +15,21 @@ response_format = "mp3"
 speed = 1.0
 
 try:
-    # Test generate_speech with reference audio from the environment variable
+    # Verify reference audio path
     if not REF_AUDIO_PATH or not os.path.exists(REF_AUDIO_PATH):
         raise FileNotFoundError(f"Reference audio file specified in REF_AUDIO_PATH not found: {REF_AUDIO_PATH}")
 
-    output_file_path = generate_speech(text, voice=voice, response_format=response_format, speed=speed, ref_audio=REF_AUDIO_PATH)
+    # Initialize TTSHandler
+    tts_handler = TTSHandler(default_voice=voice)
+
+    # Test generate_speech with reference audio
+    output_file_path = tts_handler.generate_speech(
+        text=text,
+        voice=voice,
+        response_format=response_format,
+        speed=speed
+    )
     print(f"Generated speech saved to: {output_file_path}")
+
 except Exception as e:
     print(f"Error generating speech: {e}")
-
