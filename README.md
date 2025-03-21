@@ -62,7 +62,7 @@ Ensure you have downloaded the necessary voice models and reference audio file:
   ```bash
   mkdir -p ckpts/Emilia
   git clone https://huggingface.co/SWivid/F5-TTS
-  mv F5-TTS/F5TTS_Base/* ckpts/Emilia/
+  mv F5-TTS/F5TTS_v1_Base/* ckpts/Emilia/
 
   mkdir -p ref_audio
   curl -L -o ref_audio/Emilia.wav https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
@@ -73,7 +73,7 @@ Ensure you have downloaded the necessary voice models and reference audio file:
   ```powershell
   mkdir ckpts\Emilia
   git clone https://huggingface.co/SWivid/F5-TTS
-  move F5-TTS\F5TTS_Base\* ckpts\Emilia\
+  move F5-TTS\F5TTS_v1_Base\* ckpts\Emilia\
 
   mkdir ref_audio
   curl.exe -L -o ref_audio\Emilia.wav https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
@@ -91,15 +91,9 @@ Copy `.env.example` to `.env` and update it as needed:
   cp .env.example .env
   ```
 
-- **Windows (Command Prompt):**
+- **Windows (Command Prompt and PowerShell):**
 
   ```cmd
-  copy .env.example .env
-  ```
-
-- **Windows (PowerShell):**
-
-  ```powershell
   copy .env.example .env
   ```
 
@@ -116,7 +110,7 @@ Copy `.env.example` to `.env` and update it as needed:
 Use Docker Compose to build and start the service:
 
 ```bash
-docker-compose up --build -d
+docker compose up --build -d
 ```
 
 *This command may take several minutes to complete, especially the first time as Docker downloads the necessary images.*
@@ -130,13 +124,13 @@ The API will be available at `http://localhost:9090` by default.
 - **Stop the service:**
 
   ```bash
-  docker-compose down
+  docker compose down
   ```
 
 - **Restart the service:**
 
   ```bash
-  docker-compose up -d
+  docker compose up -d
   ```
 
 **Step 8: Confirm Service is Operational**
