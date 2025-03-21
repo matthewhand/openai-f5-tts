@@ -168,3 +168,5 @@ cython_debug/
 *.txt
 *.pt
 F5-TTS/
+
+cache/
