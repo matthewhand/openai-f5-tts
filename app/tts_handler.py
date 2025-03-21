@@ -111,26 +111,6 @@ class TTSHandler:
         save_file(validated_state_dict, safetensors_path)
         logging.info(f".safetensors file successfully saved at {safetensors_path}")
 
-    def get_model_checkpoint(self, voice_dir, checkpoint_file="model_1200000.safetensors"):
-        """Loads a specified model checkpoint, converting .pt to .safetensors if needed."""
-        safetensors_path = os.path.join(voice_dir, "model_1200000.safetensors")
-        pt_path = os.path.join(voice_dir, "model_1200000.pt")
-
-        if os.path.exists(safetensors_path):
-            logging.info(f"Found .safetensors file: {safetensors_path}")
-            return safetensors_path
-
-        if os.path.exists(pt_path):
-            logging.info(f".safetensors not found; attempting to convert .pt file: {pt_path}")
-            if not self.disable_pcm_normalization:
-                self.convert_pt_to_safetensors(pt_path, safetensors_path)
-                return safetensors_path
-            else:
-                logging.warning(f".pt file found but conversion is disabled: {pt_path}")
-                return pt_path
-
-        logging.error(f"No valid model checkpoint found in {voice_dir}")
-        raise FileNotFoundError(f"Neither .pt nor .safetensors file exists in {voice_dir}")
 
     def discover_models(self):
         """
@@ -143,15 +123,21 @@ class TTSHandler:
         for folder in os.listdir(self.CKPTS_DIR):
             voice_dir = os.path.join(self.CKPTS_DIR, folder)
             if os.path.isdir(voice_dir):
-                model_path = os.path.join(voice_dir, "model_1200000.safetensors")
+                model_path = os.path.join(voice_dir, "model_1250000.safetensors")
                 if not os.path.exists(model_path):
-                    model_path = os.path.join(voice_dir, "model_1200000.pt")
-
+                    model_path = os.path.join(voice_dir, "model_1250000.pt")
+                    if not os.path.exists(model_path):
+                        model_path = os.path.join(voice_dir, "model_1200000.safetensors")
+                        if not os.path.exists(model_path):
+                            model_path = os.path.join(voice_dir, "model_1200000.pt")
+                
+                logging.debug(f"Checking for model file for voice {folder}: {model_path}, exists: {os.path.exists(model_path)}")
                 if os.path.exists(model_path):
                     self.available_models[folder] = model_path
                     logging.info(f"Discovered model for voice: {folder}")
                 else:
-                    logging.warning(f"No valid checkpoint found for voice: {folder}")
+                    available_files = os.listdir(voice_dir)
+                    logging.warning(f"No valid checkpoint found for voice: {folder}. Files present: {available_files}")
 
     def load_voice_model(self, voice_name):
         """
