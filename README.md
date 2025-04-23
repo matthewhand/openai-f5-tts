@@ -403,9 +403,13 @@ curl -X POST http://localhost:9090/v1/audio/speech \
 - [x] Expose OpenAI-compatible endpoint
 - [x] Fix Docker + CUDA compatibility
 - [x] Multiple voice models
+- [x] Add CLI entrypoint and tests
 - [ ] Add expression parsing for nuanced speech
 - [ ] Document usage for fine-tuned models
 - [ ] Enhance error handling and logging
+- [ ] Add unit tests for TTSHandler
+- [ ] Add integration tests for API endpoints
+- [ ] Implement CI workflow (GitHub Actions)
 
 ---
 

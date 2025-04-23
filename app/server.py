@@ -1,7 +1,6 @@
 import os
 import logging
 from flask import Flask, request, send_file, jsonify
-from gevent.pywsgi import WSGIServer
 from dotenv import load_dotenv
 from argparse import ArgumentParser
 
@@ -183,11 +182,17 @@ def get_loaded_models():
     loaded = list(tts_handler.loaded_models.keys())
     return jsonify({"loaded_models": loaded})
 
+try:
+    from gevent.pywsgi import WSGIServer
+except ImportError:
+    WSGIServer = None  # Gevent not installed
+
 if __name__ == '__main__':
     logging.info(f"F5-TTS API running on http://localhost:{PORT}")
     # Start the server using Gevent WSGI server for better concurrency support
-    http_server = WSGIServer(('0.0.0.0', PORT), app)
-    try:
-        http_server.serve_forever()
-    except KeyboardInterrupt:
-        logging.info("Shutting down server.")
+    if WSGIServer is not None:
+        http_server = WSGIServer(('0.0.0.0', PORT), app)
+        try:
+            http_server.serve_forever()
+        except KeyboardInterrupt:
+            logging.info("Shutting down server.")
