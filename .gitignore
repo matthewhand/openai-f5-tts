@@ -165,7 +165,7 @@ cython_debug/
 *.json
 *.mp3
 *.wav
-*.txt
++!requirements.txt
 *.pt
 F5-TTS/
 

@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.8, 3.9, 3.10]
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flask gevent python-dotenv numpy soundfile librosa torch safetensors transformers pytest flasgger
+      - name: Run tests
+        run: pytest -q
+
+  docs:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flask gevent python-dotenv numpy soundfile librosa torch safetensors transformers flasgger
+      - name: Start server
+        run: nohup openai-f5-tts --host 127.0.0.1 --port 9090 &
+      - name: Wait for server
+        run: sleep 5
+      - name: Fetch OpenAPI spec
+        run: curl -s http://127.0.0.1:9090/apidocs/swagger.json -o openapi.json
+      - name: Upload OpenAPI spec
+        uses: actions/upload-artifact@v3
+        with:
+          name: openapi-spec
+          path: openapi.json

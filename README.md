@@ -1,7 +1,7 @@
 # openai-f5-tts
 
 <img src="assets/images/logo.webp" alt="Project Logo" width="200"/>
-
+[![CI](https://github.com/matthewhand/openai-f5-tts/actions/workflows/ci.yml/badge.svg)](https://github.com/matthewhand/openai-f5-tts/actions/workflows/ci.yml)  [![OpenAPI Spec](https://img.shields.io/badge/openapi-spec-blue)](/apidocs/swagger.json)
 Welcome to **openai-f5-tts**! This project provides a user-friendly Flask-based API for generating high-quality text-to-speech (TTS) audio using **F5-TTS**, a flexible and powerful TTS engine. The API supports customizable voices, including the default voice **Emilia**, and allows for easy integration into applications requiring speech synthesis.
 
 ---
@@ -14,6 +14,7 @@ Welcome to **openai-f5-tts**! This project provides a user-friendly Flask-based 
 - [Development Setup](#development-setup)
   - [Prerequisites](#prerequisites-1)
   - [Installation Steps](#installation-steps)
+  - [Packaging & Installation](#packaging--installation)
 - [API Endpoints](#api-endpoints)
 - [Adding Your Own Fine-Tuned Checkpoint](#adding-your-own-fine-tuned-checkpoint)
 - [TODO](#todo)
@@ -112,7 +113,7 @@ Use Docker Compose to build and start the service:
 ```bash
 docker compose up --build -d
 ```
-
+Access the Swagger UI at `http://localhost:9090/apidocs`
 *This command may take several minutes to complete, especially the first time as Docker downloads the necessary images.*
 
 **Step 6: Access the API**
@@ -232,7 +233,7 @@ pip install torch==2.3.0+cpu torchaudio==2.3.0+cpu --extra-index-url https://dow
 Install the required Python packages:
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
 **Step 6: Set Up Environment Variables**
@@ -259,9 +260,55 @@ Start the Flask server locally:
 python app/server.py
 ```
 
+Alternatively, use the CLI entry point:
+
+```bash
+python app/cli.py --host 0.0.0.0 --port 9090
+```
+
+Use `--debug` to enable debug mode:
+
+```bash
+python app/cli.py --debug
+```
+
 The API will be accessible at `http://localhost:9090`.
 
 ---
+
+## Packaging & Installation
+
+Install the package in editable mode:
+
+```bash
+pip install -e .
+```
+
+You can now start the service with the CLI entry point:
+
+```bash
+openai-f5-tts --host 0.0.0.0 --port 9090
+```
+
+Access the Swagger UI at `http://localhost:9090/apidocs` and raw spec at `http://localhost:9090/apispec_1.json`.
+
+---
+
+## CLI Usage
+
+After installing, use the `openai-f5-tts` command-line tool to interact directly:
+
+```bash
+openai-f5-tts list-engines
+openai-f5-tts list-voices --engine f5
+openai-f5-tts speak --engine f5 --text "Hello {happy} world" --voice Emilia --output output.mp3
+openai-f5-tts mix --inputs file1.wav file2.wav --mode overlay --sr 16000 --output mixed.wav
+```
+
+- `list-engines`: List installed TTS engines.
+- `list-voices`: List available voices for a specific engine.
+- `speak`: Generate speech from text and save to a file.
+- `mix`: Mix multiple audio files and save to a file. Optionally override sample rate with `--sr`.
 
 ## API Endpoints
 
@@ -273,7 +320,7 @@ Primary route for generating speech from text input. Requires an API key in the 
 - **Method**: `POST`
 - **Headers**: `Authorization: Bearer <API_KEY>`
 - **Data (JSON)**:
-  - `input` (string): The text to convert to speech.
+  - `input` (string): The text to convert to speech. The text can include expression tags in curly braces (e.g., `{happy}`, `{sad}`, `{angry}`, `{calm}`) to adjust speech style and speed. Tags are stripped before synthesis.
   - `voice` (string, optional): Voice model to use (default: "Emilia").
   - `response_format` (string, optional): Output audio format (default: `mp3`).
   - `speed` (float, optional): Speech speed adjustment factor.
@@ -293,6 +340,41 @@ curl -X POST http://localhost:9090/v1/audio/speech \
            "response_format": "mp3",
            "speed": 1.0
          }' > output.mp3
+```
+
+**Example with expression tag:**
+
+```bash
+curl -X POST http://localhost:9090/v1/audio/speech \
+     -H "Authorization: Bearer <API_KEY>" \
+     -H "Content-Type: application/json" \
+     -d '{
+           "input": "Hello {happy} world"
+         }' > happy.mp3
+```
+
+### `/v1/audio/mix`
+
+Mix multiple uploaded audio files.
+
+- **URL**: `/v1/audio/mix`
+- **Method**: `POST`
+- **Headers**: `Authorization: Bearer <API_KEY>`
+- **Data (multipart/form-data)**:
+  - `inputs` (file[]): Audio files to mix.
+  - `mode` (string, optional): `overlay` (default) or `concat`.
+  - `sr` (integer, optional): Sample rate for output; defaults to inputs'.
+
+- **Response**: WAV audio file containing the mixed audio.
+
+**Example:**
+
+```bash
+curl -X POST http://localhost:9090/v1/audio/mix \
+  -H "Authorization: Bearer <API_KEY>" \
+  -F "mode=overlay" \
+  -F "inputs=@file1.wav" \
+  -F "inputs=@file2.wav" > mixed.wav
 ```
 
 ### `/v1/models`
@@ -323,6 +405,41 @@ Lists all supported voices, regardless of language.
 - **Method**: `GET`
 - **Headers**: `Authorization: Bearer <API_KEY>`
 - **Response**: JSON containing all supported voices.
+
+### `/v1/loaded_models`
+
+Lists currently loaded TTS models in memory.
+
+- **URL**: `/v1/loaded_models`
+- **Method**: `GET`
+- **Headers**: `Authorization: Bearer <API_KEY>`
+- **Response**: JSON containing `"loaded_models"`: list of model names.
+
+### `/v1/engines`
+
+Lists available TTS engines.
+
+- **URL**: `/v1/engines`
+- **Method**: `GET`
+- **Headers**: `Authorization: Bearer <API_KEY>`
+- **Response**: JSON containing `"engines"`: list of engine names.
+
+### `/v1/engines/<engine_name>/voices`
+
+Lists available voices for a specific engine.
+
+- **URL**: `/v1/engines/<engine_name>/voices`
+- **Method**: `GET`
+- **Headers**: `Authorization: Bearer <API_KEY>`
+- **Response**: JSON containing `"voices"`: list of voice names.
+
+### `/healthz`
+
+Simple health check endpoint.
+
+- **URL**: `/healthz`
+- **Method**: `GET`
+- **Response**: `{'status': 'ok'}`
 
 ---
 
@@ -404,12 +521,12 @@ curl -X POST http://localhost:9090/v1/audio/speech \
 - [x] Fix Docker + CUDA compatibility
 - [x] Multiple voice models
 - [x] Add CLI entrypoint and tests
-- [ ] Add expression parsing for nuanced speech
-- [ ] Document usage for fine-tuned models
-- [ ] Enhance error handling and logging
-- [ ] Add unit tests for TTSHandler
-- [ ] Add integration tests for API endpoints
-- [ ] Implement CI workflow (GitHub Actions)
+- [x] Add unit tests for TTSHandler
+- [x] Add integration tests for API endpoints
+- [x] Implement CI workflow (GitHub Actions)
+- [x] Add expression parsing for nuanced speech
+- [x] Document usage for fine-tuned models
+- [x] Enhance error handling and logging
 
 ---
 

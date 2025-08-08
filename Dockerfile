@@ -6,7 +6,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     WORKDIR=/app \
     REF_AUDIO_DIR=/app/ref_audio \
     CKPTS_DIR=/app/ckpts \
-    CACHE_DIR=/app/ref_audio_cache
+    CACHE_DIR=/app/cache \
+    HF_HOME=/app/cache/huggingface \
+    TRANSFORMERS_CACHE=/app/cache/huggingface \
+    TORCH_HOME=/app/cache/torch \
+    PYTHONPATH=${WORKDIR}
 
 # Install necessary dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -25,18 +29,23 @@ WORKDIR ${WORKDIR}
 # Create expected directories
 RUN mkdir -p ${REF_AUDIO_DIR} ${CKPTS_DIR} ${CACHE_DIR}
 
-# Copy Python dependencies
-COPY requirements.txt ${WORKDIR}/
+# Copy full project into working directory (app folder preserved)
+COPY . ${WORKDIR}/
 
-# Install Python dependencies
-RUN python3 -m pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies via setup.py
+RUN python3 -m pip install --no-cache-dir .
 
-# Copy application code
-COPY app/ ${WORKDIR}/
+# Allow optional override to skip downloading assets and mount existing ckpts dir
+VOLUME ["${CKPTS_DIR}", "${CACHE_DIR}"]
 
-# Download example reference audio
-RUN curl -L -o ${REF_AUDIO_DIR}/basic_ref_en.wav \
-    https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
+# Optional asset downloads (reference audio)
+ARG SKIP_DOWNLOAD_ASSETS=false
+RUN if [ "${SKIP_DOWNLOAD_ASSETS}" = "false" ]; then \
+      curl -L -o ${REF_AUDIO_DIR}/basic_ref_en.wav \
+        https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav; \
+    else \
+      echo "Skipping asset downloads"; \
+    fi
 
 # Default command to run the server
-CMD ["python3", "/app/server.py"]
+CMD ["python", "-m", "app.cli", "--host", "0.0.0.0", "--port", "9090"]

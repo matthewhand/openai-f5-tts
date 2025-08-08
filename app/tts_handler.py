@@ -11,15 +11,27 @@ import gc  # Import garbage collection
 from collections import OrderedDict
 from safetensors.torch import save_file, load_file
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
-from f5_tts.model import DiT
-from f5_tts.infer.utils_infer import (
-    load_vocoder,
-    load_model,
-    infer_process,
-    preprocess_ref_audio_text,
-    remove_silence_for_generated_wav
-)
-from utils import AUDIO_FORMAT_MIME_TYPES
+from .utils import AUDIO_FORMAT_MIME_TYPES
+
+# Optional import of F5-TTS library
+try:
+    from f5_tts.model import DiT
+    from f5_tts.infer.utils_infer import (
+        load_vocoder,
+        load_model,
+        infer_process,
+        preprocess_ref_audio_text,
+        remove_silence_for_generated_wav
+    )
+except ImportError:
+    import logging
+    logging.warning("f5_tts library not installed; TTS functionality disabled")
+    DiT = None
+    def load_vocoder(): return None
+    def load_model(*args, **kwargs): return None
+    def infer_process(*args, **kwargs): raise NotImplementedError("f5_tts not available")
+    def preprocess_ref_audio_text(*args, **kwargs): raise NotImplementedError("f5_tts not available")
+    def remove_silence_for_generated_wav(*args, **kwargs): raise NotImplementedError("f5_tts not available")
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -50,19 +62,40 @@ class TTSHandler:
         self.disable_pcm_normalization = disable_pcm_normalization
         self.default_voice = default_voice
 
-        self.cleanup_cache()
-        self.processor, self.whisper_model = self.load_whisper_model()
-        self.vocoder = load_vocoder()
-        if self.vocoder:
-            logging.info("Vocoder loaded successfully.")
-        else:
-            logging.error("Vocoder failed to load. Ensure that load_vocoder is properly implemented.")
-            raise RuntimeError("Failed to load vocoder.")
+        # Expression parsing speed multipliers for nuanced speech
+        self.EXPRESSION_SPEED_MAP = {
+            'happy': 1.2,
+            'sad': 0.8,
+            'angry': 1.5,
+            'calm': 0.9
+        }
 
+        # Initialize models: whisper processor and vocoder
+        self.cleanup_cache()
+        try:
+            self.processor, self.whisper_model = self.load_whisper_model()
+            self.vocoder = load_vocoder()
+            if self.vocoder:
+                logging.info("Vocoder loaded successfully.")
+            else:
+                logging.warning("Vocoder not loaded; skipping TTS model init.")
+                self.processor, self.whisper_model, self.vocoder = None, None, None
+        except Exception as e:
+            logging.warning(f"Skipping model initialization due to error: {e}")
+            self.processor, self.whisper_model, self.vocoder = None, None, None
+
+        # Set up model bookkeeping
         self.available_models = {}
         self.loaded_models = OrderedDict()
-        self.discover_models()
-        self.load_default_model()
+        # Discover and load default model only if initialization succeeded
+        if self.processor and self.whisper_model and self.vocoder:
+            self.discover_models()
+            try:
+                self.load_default_model()
+            except Exception as e:
+                logging.warning(f"Skipping default model load due to error: {e}")
+        else:
+            logging.info("TTSHandler initialized without active models.")
 
     def cleanup_cache(self):
         """
@@ -348,7 +381,7 @@ class TTSHandler:
         logging.debug(f"Transcription result: {transcription}")
         return transcription
 
-    def infer(self, gen_text, voice_name, model):
+    def infer(self, gen_text, voice_name, model, speed=1.0, ref_audio=None):
         """
         Generates speech using F5-TTS based on provided text and voice.
 
@@ -356,6 +389,8 @@ class TTSHandler:
             gen_text (str): Text to generate speech from.
             voice_name (str): Voice name.
             model: Loaded model object.
+            speed (float): Speed adjustment factor.
+            ref_audio (str): Optional reference audio override.
 
         Returns:
             tuple: (sample_rate, audio_data)
@@ -364,17 +399,26 @@ class TTSHandler:
             logging.debug(f"Generating speech for voice '{voice_name}': {gen_text}")
             ref_text = self.transcribe_audio(voice_name)
 
-            ref_audio_path = self.process_reference_audio(voice_name)
+            # Override reference audio if provided
+            if ref_audio:
+                if os.path.exists(ref_audio):
+                    logging.info(f"Using reference audio override for voice '{voice_name}': {ref_audio}")
+                    ref_audio_path = ref_audio
+                else:
+                    logging.warning(f"Reference audio override not found: {ref_audio}, using default.")
+                    ref_audio_path = self.process_reference_audio(voice_name)
+            else:
+                ref_audio_path = self.process_reference_audio(voice_name)
 
             if ref_audio_path and os.path.exists(ref_audio_path):
                 logging.info(f"Using reference audio for voice '{voice_name}': {ref_audio_path}")
                 final_wave, final_sample_rate, _ = infer_process(
-                    ref_audio_path, ref_text, gen_text, model, self.vocoder, cross_fade_duration=0.15, speed=1.0
+                    ref_audio_path, ref_text, gen_text, model, self.vocoder, cross_fade_duration=0.15, speed=speed
                 )
             else:
                 logging.info(f"No reference audio found for voice '{voice_name}'. Proceeding without it.")
                 final_wave, final_sample_rate, _ = infer_process(
-                    None, ref_text, gen_text, model, self.vocoder, cross_fade_duration=0.15, speed=1.0
+                    None, ref_text, gen_text, model, self.vocoder, cross_fade_duration=0.15, speed=speed
                 )
             logging.debug(f"Generated waveform shape: {final_wave.shape}")
             return final_sample_rate, final_wave.squeeze().cpu().numpy() if isinstance(final_wave, torch.Tensor) else final_wave.squeeze()
@@ -382,7 +426,7 @@ class TTSHandler:
             logging.error(f"Error during inference process: {e}")
             raise RuntimeError("Failed to generate speech.")
 
-    def generate_speech(self, text, voice='Emilia', response_format='mp3', speed=1.0):
+    def generate_speech(self, text, voice='Emilia', response_format='mp3', speed=1.0, ref_audio=None):
         """
         Generates and saves speech audio from text for a specific voice.
 
@@ -391,10 +435,25 @@ class TTSHandler:
             voice (str): Voice name.
             response_format (str): Audio format (e.g., 'mp3').
             speed (float): Speed adjustment factor.
+            ref_audio (str): Optional reference audio override.
 
         Returns:
             str: Path to the generated audio file.
         """
+        # Disk space safeguard: ensure at least MIN_FREE_BYTES (1GB) free
+        min_free = int(os.getenv("MIN_FREE_BYTES", 1024**3))
+        check_paths = ["/", self.CKPTS_DIR, os.getcwd()]
+        for path in check_paths:
+            try:
+                free = shutil.disk_usage(path).free
+                if free < min_free:
+                    logging.error(f"Insufficient disk space at {path}: {free} bytes free, required {min_free}")
+                    raise RuntimeError("Insufficient disk space. Aborting TTS generation.")
+            except Exception:
+                # ignore missing paths
+                continue
+        logging.debug("Disk space check passed.")
+
         logging.debug(f"generate_speech called with: text={text}, voice={voice}, response_format={response_format}, speed={speed}")
 
         if not text:
@@ -410,8 +469,19 @@ class TTSHandler:
             model = self.load_voice_model(voice)
             logging.info(f"Using model for voice: {voice}")
 
-            # Perform inference
-            sample_rate, audio_data = self.infer(text, voice, model)
+            # Parse expression tags in text and adjust speed
+            import re
+            expressions = re.findall(r'\{(\w+)\}', text or '')
+            for exp in expressions:
+                mult = self.EXPRESSION_SPEED_MAP.get(exp.lower())
+                if mult:
+                    speed *= mult
+                    logging.info(f"Applied expression '{exp}', adjusted speed to {speed}")
+            # Remove expression tags from text
+            text = re.sub(r'\{\w+\}', '', text or '').strip()
+
+            # Perform inference with optional reference audio override
+            sample_rate, audio_data = self.infer(text, voice, model, speed, ref_audio)
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=f".{response_format}")
             sf.write(temp_file.name, audio_data, sample_rate)
             logging.info(f"Generated speech saved to {temp_file.name}")

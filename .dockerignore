@@ -1,0 +1,12 @@
+# Exclude heavy assets from Docker build context
+ckpts
+ref_audio
+ref_audio_cache
+cache
+output.mp3
+basic_ref_en.wav
+.env
+.git
+.gitignore
+__pycache__
+*.pyc

@@ -1,6 +1,7 @@
 from flask import request, jsonify
 from functools import wraps
 import os
+from flask import request, jsonify
 import logging
 from dotenv import load_dotenv
 import json
@@ -28,8 +29,9 @@ def getenv_bool(name: str, default: bool = False) -> bool:
 API_KEY = os.getenv('API_KEY', 'your_api_key_here')
 REQUIRE_API_KEY = getenv_bool('REQUIRE_API_KEY', True)
 
+# Warn if API_KEY is missing or default; proceed without error
 if not API_KEY or API_KEY == 'your_api_key_here':
-    raise ValueError("API_KEY must be set in the environment or .env file.")
+    logging.warning(f"API_KEY is not set or default. Proceeding with REQUIRE_API_KEY={REQUIRE_API_KEY}.")
 
 def require_api_key(f):
     """
