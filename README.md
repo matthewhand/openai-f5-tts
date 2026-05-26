@@ -15,6 +15,12 @@ Welcome to **openai-f5-tts**! This project provides a user-friendly Flask-based 
   - [Prerequisites](#prerequisites-1)
   - [Installation Steps](#installation-steps)
 - [API Endpoints](#api-endpoints)
+  - [POST /v1/audio/speech](#v1audiospeech)
+  - [POST /v1/audio/speech/stream](#v1audiospeechstream)
+  - [GET /v1/models](#v1models)
+  - [GET /v1/voices](#v1voices)
+  - [GET /v1/voices/all](#v1voicesall)
+- [Streaming Test Client](#streaming-test-client)
 - [Adding Your Own Fine-Tuned Checkpoint](#adding-your-own-fine-tuned-checkpoint)
 - [TODO](#todo)
 - [Support](#support)
@@ -267,33 +273,55 @@ The API will be accessible at `http://localhost:9090`.
 
 ### `/v1/audio/speech`
 
-Primary route for generating speech from text input. Requires an API key in the request header as a Bearer token.
+Generates speech from text and returns a complete audio file. OpenAI-compatible.
 
-- **URL**: `/v1/audio/speech`
 - **Method**: `POST`
 - **Headers**: `Authorization: Bearer <API_KEY>`
-- **Data (JSON)**:
-  - `input` (string): The text to convert to speech.
-  - `voice` (string, optional): Voice model to use (default: "Emilia").
-  - `response_format` (string, optional): Output audio format (default: `mp3`).
-  - `speed` (float, optional): Speech speed adjustment factor.
-  - `ref_audio` (string, optional): Path to a reference audio file.
-
-- **Response**: An audio file in the specified format.
-
-**Example:**
+- **Body (JSON)**:
+  - `input` (string): Text to convert to speech.
+  - `voice` (string, optional): Voice model to use (default: `Emilia`).
+  - `response_format` (string, optional): Output format — `mp3`, `wav`, `flac`, etc. (default: `mp3`).
+  - `speed` (float, optional): Speed factor (default: `1.0`).
+- **Response**: Audio file in the requested format.
 
 ```bash
 curl -X POST http://localhost:9090/v1/audio/speech \
      -H "Authorization: Bearer <API_KEY>" \
      -H "Content-Type: application/json" \
-     -d '{
-           "input": "Hello world",
-           "voice": "Emilia",
-           "response_format": "mp3",
-           "speed": 1.0
-         }' > output.mp3
+     -d '{"input": "Hello world", "voice": "Emilia", "response_format": "mp3"}' \
+     > output.mp3
 ```
+
+---
+
+### `/v1/audio/speech/stream`
+
+Streams speech as raw **int16 PCM at 16 kHz** using chunked transfer encoding. Designed for real-time voice agent pipelines (e.g. Hugging Face speech-to-speech).
+
+The input text is split into sentences using an NLTK tokenizer. Each sentence is synthesised by F5-TTS and flushed to the client immediately, so playback can begin before the full response is ready. Dropping the HTTP connection mid-stream stops further synthesis — useful for barge-in handling.
+
+- **Method**: `POST`
+- **Headers**: `Authorization: Bearer <API_KEY>`
+- **Body (JSON)**:
+  - `input` (string): Text to synthesise.
+  - `voice` (string, optional): Voice model to use (default: `Emilia`).
+  - `speed` (float, optional): Speed factor (default: `1.0`).
+- **Response**:
+  - `Content-Type: audio/L16`
+  - `X-Sample-Rate: 16000`
+  - `X-Audio-Channels: 1`
+  - `X-Audio-Encoding: int16`
+  - Body: raw little-endian int16 PCM, one chunk per sentence.
+
+```bash
+curl -X POST http://localhost:9090/v1/audio/speech/stream \
+     -H "Authorization: Bearer <API_KEY>" \
+     -H "Content-Type: application/json" \
+     -d '{"input": "Hello. This streams sentence by sentence.", "voice": "Emilia"}' \
+     > output.pcm
+```
+
+> **Note**: F5-TTS is non-autoregressive — full per-sentence inference is required before each chunk can be sent. Latency to first audio is roughly the time to synthesise the first sentence (~1–2 s on GPU).
 
 ### `/v1/models`
 
@@ -323,6 +351,31 @@ Lists all supported voices, regardless of language.
 - **Method**: `GET`
 - **Headers**: `Authorization: Bearer <API_KEY>`
 - **Response**: JSON containing all supported voices.
+
+---
+
+## Streaming Test Client
+
+`test_stream_client.py` in the project root hits the streaming endpoint and writes the received PCM to a WAV file for verification.
+
+```bash
+python test_stream_client.py \
+  --text "Hello. The quick brown fox jumps over the lazy dog. Streaming works." \
+  --voice Emilia \
+  --output stream_test.wav
+```
+
+Options:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--host` | `localhost` | Server hostname |
+| `--port` | `9090` | Server port |
+| `--api-key` | `$API_KEY` env var | Bearer token |
+| `--voice` | `$DEFAULT_VOICE` env var | Voice name |
+| `--speed` | `1.0` | Speed factor |
+| `--text` | built-in sample | Text to synthesise |
+| `--output` | `stream_test_output.wav` | Output WAV path |
 
 ---
 
@@ -403,6 +456,7 @@ curl -X POST http://localhost:9090/v1/audio/speech \
 - [x] Expose OpenAI-compatible endpoint
 - [x] Fix Docker + CUDA compatibility
 - [x] Multiple voice models
+- [x] Streaming endpoint for real-time voice agent pipelines
 - [ ] Add expression parsing for nuanced speech
 - [ ] Document usage for fine-tuned models
 - [ ] Enhance error handling and logging
