@@ -1,6 +1,6 @@
 import os
 import logging
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, send_file, jsonify, Response, stream_with_context
 from gevent.pywsgi import WSGIServer
 from dotenv import load_dotenv
 from argparse import ArgumentParser
@@ -119,6 +119,56 @@ def text_to_speech():
     except Exception as e:
         logging.error(f"Unhandled exception during TTS generation: {e}")
         return jsonify({"error": "Failed to generate speech"}), 500
+
+@app.route('/v1/audio/speech/stream', methods=['POST'])
+@require_api_key
+def text_to_speech_stream():
+    """
+    Stream speech as raw int16 PCM at 16 kHz using chunked transfer encoding.
+    Text is split into sentences; each sentence is synthesised and flushed as it
+    completes. Dropping the connection mid-stream stops further synthesis.
+
+    Request body (JSON):
+      - input: Text to synthesise.
+      - voice: (Optional) Voice name. Defaults to DEFAULT_VOICE.
+      - speed: (Optional) Speed factor. Defaults to DEFAULT_SPEED.
+
+    Response:
+      Content-Type: audio/L16
+      X-Sample-Rate: 16000
+      X-Audio-Channels: 1
+      X-Audio-Encoding: int16
+    """
+    data = request.json
+    if not data or 'input' not in data:
+        return jsonify({"error": "Missing 'input' in request body"}), 400
+
+    text = data.get('input')
+    voice = data.get('voice') or DEFAULT_VOICE
+    speed = float(data.get('speed', DEFAULT_SPEED))
+
+    def generate():
+        try:
+            for chunk in tts_handler.generate_speech_stream(text, voice, speed):
+                yield chunk
+        except ValueError as e:
+            logging.error(f"Stream ValueError: {e}")
+        except RuntimeError as e:
+            logging.error(f"Stream RuntimeError: {e}")
+        except Exception as e:
+            logging.error(f"Unhandled stream exception: {e}")
+
+    headers = {
+        'X-Sample-Rate': '16000',
+        'X-Audio-Channels': '1',
+        'X-Audio-Encoding': 'int16',
+    }
+    return Response(
+        stream_with_context(generate()),
+        mimetype='audio/L16',
+        headers=headers
+    )
+
 
 @app.route('/v1/models', methods=['GET'])
 @require_api_key
