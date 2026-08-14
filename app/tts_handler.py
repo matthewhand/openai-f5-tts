@@ -348,7 +348,7 @@ class TTSHandler:
         logging.debug(f"Transcription result: {transcription}")
         return transcription
 
-    def infer(self, gen_text, voice_name, model):
+    def infer(self, gen_text, voice_name, model, speed=1.0):
         """
         Generates speech using F5-TTS based on provided text and voice.
 
@@ -356,6 +356,7 @@ class TTSHandler:
             gen_text (str): Text to generate speech from.
             voice_name (str): Voice name.
             model: Loaded model object.
+            speed (float): Speed adjustment factor.
 
         Returns:
             tuple: (sample_rate, audio_data)
@@ -369,12 +370,12 @@ class TTSHandler:
             if ref_audio_path and os.path.exists(ref_audio_path):
                 logging.info(f"Using reference audio for voice '{voice_name}': {ref_audio_path}")
                 final_wave, final_sample_rate, _ = infer_process(
-                    ref_audio_path, ref_text, gen_text, model, self.vocoder, cross_fade_duration=0.15, speed=1.0
+                    ref_audio_path, ref_text, gen_text, model, self.vocoder, cross_fade_duration=0.15, speed=speed
                 )
             else:
                 logging.info(f"No reference audio found for voice '{voice_name}'. Proceeding without it.")
                 final_wave, final_sample_rate, _ = infer_process(
-                    None, ref_text, gen_text, model, self.vocoder, cross_fade_duration=0.15, speed=1.0
+                    None, ref_text, gen_text, model, self.vocoder, cross_fade_duration=0.15, speed=speed
                 )
             logging.debug(f"Generated waveform shape: {final_wave.shape}")
             return final_sample_rate, final_wave.squeeze().cpu().numpy() if isinstance(final_wave, torch.Tensor) else final_wave.squeeze()
@@ -411,11 +412,52 @@ class TTSHandler:
             logging.info(f"Using model for voice: {voice}")
 
             # Perform inference
-            sample_rate, audio_data = self.infer(text, voice, model)
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=f".{response_format}")
-            sf.write(temp_file.name, audio_data, sample_rate)
-            logging.info(f"Generated speech saved to {temp_file.name}")
-            return temp_file.name
+            sample_rate, audio_data = self.infer(text, voice, model, speed=speed)
+            
+            # Write to WAV first (soundfile doesn't support mp3/opus/aac directly)
+            wav_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+            sf.write(wav_temp.name, audio_data, sample_rate)
+            wav_temp.close()
+            
+            # Convert to requested format if not WAV
+            if response_format.lower() == 'wav':
+                output_path = wav_temp.name
+            else:
+                output_temp = tempfile.NamedTemporaryFile(delete=False, suffix=f".{response_format}")
+                output_path = output_temp.name
+                output_temp.close()
+                
+                try:
+                    subprocess.run([
+                        "ffmpeg", "-y", "-i", wav_temp.name,
+                        "-c:a", self._get_ffmpeg_codec(response_format),
+                        output_path
+                    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    logging.info(f"Converted audio to {response_format}: {output_path}")
+                except subprocess.CalledProcessError as e:
+                    logging.error(f"FFmpeg conversion failed: {e.stderr.decode()}")
+                    raise RuntimeError(f"Failed to convert audio to {response_format}")
+                finally:
+                    # Clean up WAV temp file
+                    try:
+                        os.remove(wav_temp.name)
+                    except OSError:
+                        pass
+            
+            logging.info(f"Generated speech saved to {output_path}")
+            return output_path
         except Exception as e:
             logging.error(f"Error in generate_speech: {e}")
             raise RuntimeError("Failed to generate speech.")
+    
+    def _get_ffmpeg_codec(self, format_name):
+        """Map response format to ffmpeg codec."""
+        codecs = {
+            'mp3': 'libmp3lame',
+            'opus': 'libopus',
+            'aac': 'aac',
+            'flac': 'flac',
+            'wav': 'pcm_s16le',
+            'pcm': 'pcm_s16le',
+        }
+        return codecs.get(format_name.lower(), 'libmp3lame')
