@@ -69,6 +69,22 @@ tts_handler = TTSHandler(
     default_voice=DEFAULT_VOICE
 )
 
+# Track temp files for cleanup after response
+_temp_files_to_cleanup = set()
+
+@app.after_request
+def cleanup_temp_files(response):
+    """Clean up temporary files after response is sent."""
+    for temp_file in _temp_files_to_cleanup:
+        try:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+                logging.debug(f"Cleaned up temp file: {temp_file}")
+        except OSError as e:
+            logging.warning(f"Failed to clean up temp file {temp_file}: {e}")
+    _temp_files_to_cleanup.clear()
+    return response
+
 @app.route('/v1/audio/speech', methods=['POST'])
 @require_api_key
 def text_to_speech():
@@ -107,6 +123,8 @@ def text_to_speech():
             response_format=response_format,
             speed=speed
         )
+        # Register for cleanup after response
+        _temp_files_to_cleanup.add(output_file_path)
         return send_file(output_file_path, mimetype=mime_type,
                          as_attachment=True,
                          download_name=f"speech.{response_format}")
