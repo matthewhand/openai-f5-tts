@@ -436,9 +436,12 @@ class TTSHandler:
                     logging.info(f"Converted audio to {response_format}: {output_path}")
                 except subprocess.CalledProcessError as e:
                     logging.error(f"FFmpeg conversion failed: {e.stderr.decode()}")
+                    try:
+                        os.remove(output_path)
+                    except OSError:
+                        pass
                     raise RuntimeError(f"Failed to convert audio to {response_format}")
                 finally:
-                    # Clean up WAV temp file
                     try:
                         os.remove(wav_temp.name)
                     except OSError:

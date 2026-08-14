@@ -54,8 +54,8 @@ def require_api_key(f):
         if not token:
             token = request.headers.get('xi-api-key')
         if not token:
-            logging.warning("Authorization header is missing.")
-            return jsonify({"error": "Authorization header is missing"}), 401
+            logging.warning("Missing authentication: neither Authorization: Bearer nor xi-api-key found.")
+            return jsonify({"error": "Missing authentication: provide 'Authorization: Bearer <token>' or 'xi-api-key: <token>' header"}), 401
 
         # Validate the token against the stored API key
         if token != API_KEY:

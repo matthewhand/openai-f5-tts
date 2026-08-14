@@ -23,3 +23,9 @@ def test_build_alignment_null_when_file_missing():
     assert al is None
     assert words == []
     assert source == "unavailable"
+
+
+def test_estimate_alignment_empty():
+    al = estimate_alignment("", 1.0)
+    assert al["characters"] == []
+    assert al["character_end_times_seconds"] == []
