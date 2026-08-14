@@ -15,6 +15,11 @@ Welcome to **openai-f5-tts**! This project provides a user-friendly Flask-based 
   - [Prerequisites](#prerequisites-1)
   - [Installation Steps](#installation-steps)
 - [API Endpoints](#api-endpoints)
+  - [/v1/audio/speech](#v1audiospeech)
+  - [/v1/text-to-speech/{voice}/with-timestamps](#v1text-to-speechvoicewith-timestamps)
+  - [/v1/models](#v1models)
+  - [/v1/voices](#v1voices)
+  - [/v1/voices/all](#v1voicesall)
 - [Adding Your Own Fine-Tuned Checkpoint](#adding-your-own-fine-tuned-checkpoint)
 - [TODO](#todo)
 - [Support](#support)
@@ -271,7 +276,7 @@ Primary route for generating speech from text input. Requires an API key in the 
 
 - **URL**: `/v1/audio/speech`
 - **Method**: `POST`
-- **Headers**: `Authorization: Bearer <API_KEY>`
+- **Headers**: `Authorization: Bearer <API_KEY>` or `xi-api-key: <API_KEY>`
 - **Data (JSON)**:
   - `input` (string): The text to convert to speech.
   - `voice` (string, optional): Voice model to use (default: "Emilia").
@@ -294,6 +299,34 @@ curl -X POST http://localhost:9090/v1/audio/speech \
            "speed": 1.0
          }' > output.mp3
 ```
+
+### `/v1/text-to-speech/{voice}/with-timestamps`
+
+Optional ElevenLabs-shaped timestamps. Speech still succeeds if no aligner is installed.
+
+- **URL**: `/v1/text-to-speech/<voice>/with-timestamps`
+- **Method**: `POST`
+- **Headers**: `Authorization: Bearer <API_KEY>` or `xi-api-key: <API_KEY>`
+- **Data (JSON)**:
+  - `text` or `input` (string): The text to convert to speech.
+  - `speed` (float, optional): Speech speed. Also accepted as `voice_settings.speed`.
+  - `response_format` (string, optional): `mp3` (default), `wav`, `flac`, or `ogg`. Query `output_format` is also accepted.
+- **Response**: JSON (not raw audio):
+  - `audio_base64`: encoded audio
+  - `alignment` / `normalized_alignment`: `{characters, character_start_times_seconds, character_end_times_seconds}` or `null`
+  - `words`: `[{word, start, end}]` (empty if alignment is null)
+  - `alignment_source`: `duration_weighted`, `unavailable`, or `whisperx`
+- **Fallback**: `/v1/audio/speech` is unchanged and still returns raw audio. If duration cannot be read, `alignment` is `null` and `alignment_source` is `unavailable`. WhisperX is detected if installed but not hooked yet, so the current path is duration-weighted.
+
+**Example:**
+
+```bash
+curl -sS -X POST http://localhost:9090/v1/text-to-speech/Emilia/with-timestamps \
+     -H "Authorization: Bearer <API_KEY>" \
+     -H "Content-Type: application/json" \
+     -d '{"text": "Hello world", "response_format": "mp3"}'
+```
+
 
 ### `/v1/models`
 
@@ -403,6 +436,7 @@ curl -X POST http://localhost:9090/v1/audio/speech \
 - [x] Expose OpenAI-compatible endpoint
 - [x] Fix Docker + CUDA compatibility
 - [x] Multiple voice models
+- [x] Optional ElevenLabs-shaped timestamps (`/v1/text-to-speech/{voice}/with-timestamps`)
 - [ ] Add expression parsing for nuanced speech
 - [ ] Document usage for fine-tuned models
 - [ ] Enhance error handling and logging
