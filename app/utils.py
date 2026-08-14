@@ -47,16 +47,15 @@ def require_api_key(f):
         if not REQUIRE_API_KEY:
             return f(*args, **kwargs)
 
+        token = None
         auth_header = request.headers.get('Authorization')
-        if not auth_header:
+        if auth_header and auth_header.startswith('Bearer '):
+            token = auth_header.split('Bearer ', 1)[1]
+        if not token:
+            token = request.headers.get('xi-api-key')
+        if not token:
             logging.warning("Authorization header is missing.")
             return jsonify({"error": "Authorization header is missing"}), 401
-
-        if not auth_header.startswith('Bearer '):
-            logging.warning("Authorization header is malformed.")
-            return jsonify({"error": "Authorization header must start with 'Bearer'"}), 401
-
-        token = auth_header.split('Bearer ')[1]
 
         # Validate the token against the stored API key
         if token != API_KEY:
