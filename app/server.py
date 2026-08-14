@@ -1,4 +1,5 @@
 import os
+import base64
 import logging
 from flask import Flask, request, send_file, jsonify
 from gevent.pywsgi import WSGIServer
@@ -7,6 +8,7 @@ from argparse import ArgumentParser
 
 from tts_handler import TTSHandler
 from utils import require_api_key, AUDIO_FORMAT_MIME_TYPES
+from alignment import build_alignment
 
 # Initialize Flask app and load environment variables
 app = Flask(__name__)
@@ -137,6 +139,59 @@ def text_to_speech():
     except Exception as e:
         logging.error(f"Unhandled exception during TTS generation: {e}")
         return jsonify({"error": "Failed to generate speech"}), 500
+
+
+
+def _output_format_to_ext(output_format):
+    raw = (output_format or DEFAULT_RESPONSE_FORMAT or "mp3").lower()
+    if raw.startswith("wav") or raw == "pcm":
+        return "wav"
+    if raw.startswith("ogg") or raw.startswith("opus"):
+        return "ogg"
+    if raw.startswith("flac"):
+        return "flac"
+    return "mp3"
+
+
+@app.route("/v1/text-to-speech/<voice_id>/with-timestamps", methods=["POST"])
+@require_api_key
+def text_to_speech_with_timestamps(voice_id):
+    """ElevenLabs-shaped timestamps. Missing aligner software does not fail TTS."""
+    data = request.json or {}
+    text = data.get("text") or data.get("input")
+    if not text:
+        return jsonify({"error": "Missing 'text' in request body"}), 400
+
+    voice = voice_id or DEFAULT_VOICE
+    settings = data.get("voice_settings") or {}
+    speed = float(data.get("speed", settings.get("speed", DEFAULT_SPEED)))
+    response_format = _output_format_to_ext(
+        request.args.get("output_format") or data.get("response_format")
+    )
+    mime_type = AUDIO_FORMAT_MIME_TYPES.get(response_format.lower(), "audio/mpeg")
+
+    try:
+        output_file_path = tts_handler.generate_speech(
+            text=text, voice=voice, response_format=response_format, speed=speed
+        )
+        _temp_files_to_cleanup.add(output_file_path)
+        alignment, words, source = build_alignment(text, output_file_path)
+        with open(output_file_path, "rb") as fh:
+            audio_b64 = base64.b64encode(fh.read()).decode("ascii")
+        return jsonify({
+            "audio_base64": audio_b64,
+            "alignment": alignment,
+            "normalized_alignment": alignment,
+            "words": words,
+            "alignment_source": source,
+        })
+    except ValueError as e:
+        logging.error(f"ValueError during timestamped TTS: {e}")
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logging.error(f"Unhandled exception during timestamped TTS: {e}")
+        return jsonify({"error": "Failed to generate speech"}), 500
+
 
 @app.route('/v1/models', methods=['GET'])
 @require_api_key
