@@ -50,7 +50,8 @@ def estimate_alignment(text: str, duration_s: float) -> dict:
         starts.append(round(t, 4))
         t += dt
         ends.append(round(t, 4))
-    ends[-1] = round(duration_s, 4)
+    if ends:
+        ends[-1] = round(duration_s, 4)
     return {
         "characters": chars,
         "character_start_times_seconds": starts,

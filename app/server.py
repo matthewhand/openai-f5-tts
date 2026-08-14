@@ -1,4 +1,6 @@
 import os
+import io
+import threading
 import base64
 import logging
 from flask import Flask, request, send_file, jsonify
@@ -71,21 +73,48 @@ tts_handler = TTSHandler(
     default_voice=DEFAULT_VOICE
 )
 
-# Track temp files for cleanup after response
+# Leftover temp files if a handler crashes before sending bytes
 _temp_files_to_cleanup = set()
+_temp_files_lock = threading.Lock()
 
 @app.after_request
 def cleanup_temp_files(response):
-    """Clean up temporary files after response is sent."""
-    for temp_file in _temp_files_to_cleanup:
+    """Clean leftover temp files. Handlers should delete after reading into memory."""
+    with _temp_files_lock:
+        files_to_clean = list(_temp_files_to_cleanup)
+        _temp_files_to_cleanup.clear()
+    for temp_file in files_to_clean:
         try:
             if os.path.exists(temp_file):
                 os.remove(temp_file)
                 logging.debug(f"Cleaned up temp file: {temp_file}")
         except OSError as e:
             logging.warning(f"Failed to clean up temp file {temp_file}: {e}")
-    _temp_files_to_cleanup.clear()
     return response
+
+
+def _send_and_delete(path, mime_type, download_name):
+    """Read the file fully, delete it, then send from memory so after_request cannot race send_file."""
+    with _temp_files_lock:
+        _temp_files_to_cleanup.add(path)
+    try:
+        with open(path, "rb") as fh:
+            payload = fh.read()
+    except Exception:
+        raise
+    else:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        with _temp_files_lock:
+            _temp_files_to_cleanup.discard(path)
+    return send_file(
+        io.BytesIO(payload),
+        mimetype=mime_type,
+        as_attachment=True,
+        download_name=download_name,
+    )
 
 @app.route('/v1/audio/speech', methods=['POST'])
 @require_api_key
@@ -125,11 +154,9 @@ def text_to_speech():
             response_format=response_format,
             speed=speed
         )
-        # Register for cleanup after response
-        _temp_files_to_cleanup.add(output_file_path)
-        return send_file(output_file_path, mimetype=mime_type,
-                         as_attachment=True,
-                         download_name=f"speech.{response_format}")
+        return _send_and_delete(
+            output_file_path, mime_type, f"speech.{response_format}"
+        )
     except ValueError as e:
         logging.error(f"ValueError during TTS generation: {e}")
         return jsonify({"error": str(e)}), 400
@@ -174,10 +201,21 @@ def text_to_speech_with_timestamps(voice_id):
         output_file_path = tts_handler.generate_speech(
             text=text, voice=voice, response_format=response_format, speed=speed
         )
-        _temp_files_to_cleanup.add(output_file_path)
+        with _temp_files_lock:
+            _temp_files_to_cleanup.add(output_file_path)
         alignment, words, source = build_alignment(text, output_file_path)
-        with open(output_file_path, "rb") as fh:
-            audio_b64 = base64.b64encode(fh.read()).decode("ascii")
+        try:
+            with open(output_file_path, "rb") as fh:
+                audio_b64 = base64.b64encode(fh.read()).decode("ascii")
+        except Exception as e:
+            logging.error(f"Failed to read output file: {e}")
+            raise
+        try:
+            os.remove(output_file_path)
+        except OSError:
+            pass
+        with _temp_files_lock:
+            _temp_files_to_cleanup.discard(output_file_path)
         return jsonify({
             "audio_base64": audio_b64,
             "alignment": alignment,
