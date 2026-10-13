@@ -4,6 +4,7 @@ import os
 import logging
 from dotenv import load_dotenv
 import json
+import hmac
 
 # Load environment variables from .env file
 load_dotenv()
@@ -58,7 +59,7 @@ def require_api_key(f):
             return jsonify({"error": "Missing authentication: provide 'Authorization: Bearer <token>' or 'xi-api-key: <token>' header"}), 401
 
         # Validate the token against the stored API key
-        if token != API_KEY:
+        if not hmac.compare_digest(token, API_KEY):
             logging.warning("Invalid API key provided.")
             return jsonify({"error": "Invalid API key"}), 401
 
