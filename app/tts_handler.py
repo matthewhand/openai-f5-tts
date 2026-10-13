@@ -47,6 +47,9 @@ class TTSHandler:
         if self.MODEL_LOAD_LIMIT < 1:
             raise ValueError('MODEL_LOAD_LIMIT must be at least 1')
         self.REF_AUDIO_LIMIT_SECONDS = int(os.getenv("REF_AUDIO_LIMIT_SECONDS", "20"))
+        self.FFMPEG_TIMEOUT_SECONDS = int(os.getenv("FFMPEG_TIMEOUT_SECONDS", "120"))
+        if self.FFMPEG_TIMEOUT_SECONDS < 1:
+            raise ValueError('FFMPEG_TIMEOUT_SECONDS must be at least 1')
         self.REF_AUDIO_CACHE_DIR = "ref_audio_cache"
         os.makedirs(self.REF_AUDIO_CACHE_DIR, exist_ok=True)
 
@@ -275,11 +278,11 @@ class TTSHandler:
 
         logging.info(f"Processing reference audio for voice '{voice_name}': {ref_audio_path}")
 
-        base_filename = os.path.basename(ref_audio_path)
         cached_audio_path = os.path.join(self.REF_AUDIO_CACHE_DIR, f"{voice_name}_processed.wav")
 
         if not os.path.exists(cached_audio_path):
             logging.info(f"Processing and caching reference audio to: {cached_audio_path}")
+            temp_pcm_path = os.path.join(self.REF_AUDIO_CACHE_DIR, f"{voice_name}_processed.pcm")
             try:
                 # Use FFmpeg to trim, resample to 16kHz, convert to mono
                 subprocess.run([
@@ -290,12 +293,12 @@ class TTSHandler:
                     "-ac", "1",  # Convert to mono
                     "-y",  # Overwrite output files without asking
                     cached_audio_path
-                ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=self.FFMPEG_TIMEOUT_SECONDS)
                 logging.info("Audio trimming and resampling completed and cached.")
 
                 if not self.disable_pcm_normalization:
                     # Convert to raw PCM and back to WAV to normalize
-                    temp_pcm_path = os.path.join(self.REF_AUDIO_CACHE_DIR, f"{voice_name}_processed.pcm")
                     subprocess.run([
                         "ffmpeg",
                         "-y",
@@ -303,7 +306,8 @@ class TTSHandler:
                         "-f", "s16le",
                         "-acodec", "pcm_s16le",
                         temp_pcm_path
-                    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=self.FFMPEG_TIMEOUT_SECONDS)
                     logging.info("Audio converted to PCM.")
 
                     subprocess.run([
@@ -314,14 +318,27 @@ class TTSHandler:
                         "-ac", "1",
                         "-i", temp_pcm_path,
                         cached_audio_path
-                    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=self.FFMPEG_TIMEOUT_SECONDS)
                     logging.info("Audio converted back from PCM.")
 
-                    # Clean up PCM file
+            except Exception as exc:
+                # Never reuse a partial or timed-out reference-audio conversion.
+                logging.warning("Reference audio conversion failed; discarding partial cache")
+                try:
+                    os.remove(cached_audio_path)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    logging.warning("Could not remove incomplete reference cache")
+                raise RuntimeError("Failed to process reference audio with FFmpeg") from exc
+            finally:
+                try:
                     os.remove(temp_pcm_path)
-            except subprocess.CalledProcessError as e:
-                logging.error(f"FFmpeg error: {e.stderr.decode()}")
-                raise RuntimeError("Failed to process reference audio with FFmpeg.")
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    logging.warning("Could not remove intermediate reference PCM")
 
         # Verify the processed audio
         try:
@@ -334,8 +351,13 @@ class TTSHandler:
                 sf.write(cached_audio_path, audio_input, 16000)
                 logging.info("Audio resampled to 16000 Hz.")
         except Exception as e:
-            logging.error(f"Error verifying or resampling processed audio: {e}")
-            raise RuntimeError("Failed to verify or resample processed audio.")
+            # A failed cache validation must trigger a fresh conversion next time.
+            try:
+                os.remove(cached_audio_path)
+            except OSError:
+                pass
+            logging.error("Failed to verify processed reference audio")
+            raise RuntimeError("Failed to verify or resample processed audio") from e
 
         return cached_audio_path
 
@@ -475,7 +497,8 @@ class TTSHandler:
                     command.extend(["-f", "s16le"])
                 command.append(converted_path)
                 subprocess.run(
-                    command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                    command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=self.FFMPEG_TIMEOUT_SECONDS
                 )
                 retained_path = converted_path
             return retained_path
