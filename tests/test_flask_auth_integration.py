@@ -49,8 +49,10 @@ class RealFlaskAuthTests(unittest.TestCase):
                 return [{"name": "Emilia", "status": "loaded"}]
             def generate_speech(self, **kwargs):
                 self.calls.append(kwargs)
-                from generation_gate import SynthesisBusyError
-                raise SynthesisBusyError("synthetic busy; no inference")
+                # Use precisely the exception class captured by the real server.
+                # Transient sys.modules patching can otherwise create a second
+                # class identity when this suite runs alone.
+                raise self.busy_error_type("synthetic busy; no inference")
 
         fake_tts = types.ModuleType("tts_handler")
         fake_tts.TTSHandler = FakeTTSHandler
@@ -79,6 +81,7 @@ class RealFlaskAuthTests(unittest.TestCase):
 
         cls.client = cls.server.app.test_client()
         cls.fake_handler = cls.server.tts_handler
+        cls.fake_handler.busy_error_type = cls.server.SynthesisBusyError
 
     def setUp(self):
         self.fake_handler.calls.clear()
