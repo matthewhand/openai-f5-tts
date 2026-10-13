@@ -12,6 +12,7 @@ from utils import require_api_key, AUDIO_FORMAT_MIME_TYPES
 from alignment import build_alignment
 from request_validation import parse_speech_request, parse_timestamp_request, RequestValidationError
 from generation_gate import SynthesisBusyError
+from output_limits import read_audio_limited, AudioOutputTooLarge
 
 # Initialize Flask app and load environment variables
 app = Flask(__name__)
@@ -20,8 +21,9 @@ load_dotenv()
 # enqueue arbitrarily large text into the expensive synthesis pipeline.
 app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_REQUEST_BYTES', '65536'))
 MAX_TEXT_CHARS = int(os.getenv('MAX_TEXT_CHARS', '2000'))
-if app.config['MAX_CONTENT_LENGTH'] <= 0 or MAX_TEXT_CHARS <= 0:
-    raise ValueError('MAX_REQUEST_BYTES and MAX_TEXT_CHARS must be positive')
+MAX_AUDIO_OUTPUT_BYTES = int(os.getenv('MAX_AUDIO_OUTPUT_BYTES', '16777216'))
+if min(app.config['MAX_CONTENT_LENGTH'], MAX_TEXT_CHARS, MAX_AUDIO_OUTPUT_BYTES) <= 0:
+    raise ValueError('MAX_REQUEST_BYTES, MAX_TEXT_CHARS and MAX_AUDIO_OUTPUT_BYTES must be positive')
 
 # Parse command-line arguments
 parser = ArgumentParser(description="F5-TTS Server")
@@ -92,8 +94,7 @@ def _delete_request_file(path):
 def _send_and_delete(path, mime_type, download_name):
     """Buffer audio and delete this request's file before creating the response."""
     try:
-        with open(path, "rb") as fh:
-            payload = fh.read()
+        payload = read_audio_limited(path, MAX_AUDIO_OUTPUT_BYTES)
     finally:
         _delete_request_file(path)
     return send_file(
@@ -149,6 +150,8 @@ def text_to_speech():
     except ValueError as e:
         logging.error(f"ValueError during TTS generation: {e}")
         return jsonify({"error": str(e)}), 400
+    except AudioOutputTooLarge:
+        return jsonify({"error": "Generated audio exceeds configured output limit"}), 503
     except SynthesisBusyError:
         return jsonify({"error": "Speech generator busy; try again later"}), 503
     except RuntimeError as e:
@@ -186,8 +189,9 @@ def text_to_speech_with_timestamps(voice_id):
         )
         try:
             alignment, words, source = build_alignment(text, output_file_path)
-            with open(output_file_path, "rb") as fh:
-                audio_b64 = base64.b64encode(fh.read()).decode("ascii")
+            audio_b64 = base64.b64encode(
+                read_audio_limited(output_file_path, MAX_AUDIO_OUTPUT_BYTES)
+            ).decode("ascii")
         finally:
             _delete_request_file(output_file_path)
         return jsonify({
@@ -197,6 +201,8 @@ def text_to_speech_with_timestamps(voice_id):
             "words": words,
             "alignment_source": source,
         })
+    except AudioOutputTooLarge:
+        return jsonify({"error": "Generated audio exceeds configured output limit"}), 503
     except SynthesisBusyError:
         return jsonify({"error": "Speech generator busy; try again later"}), 503
     except ValueError as e:
