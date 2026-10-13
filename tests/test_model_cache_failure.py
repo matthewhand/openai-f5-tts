@@ -114,5 +114,23 @@ class CacheFailureTests(unittest.TestCase):
             initializer(types.SimpleNamespace())
 
 
+    def test_invalid_ffmpeg_timeout_fails_before_heavy_initialization(self):
+        for value in ("0", "-3"):
+            namespace = {
+                "torch": types.SimpleNamespace(
+                    device=lambda name: name,
+                    cuda=types.SimpleNamespace(is_available=lambda: False),
+                ),
+                "os": types.SimpleNamespace(
+                    getenv=lambda name, default: value if name == "FFMPEG_TIMEOUT_SECONDS" else default,
+                    makedirs=lambda *args, **kwargs: None,
+                ),
+                "logging": logging,
+            }
+            initializer = compiled_method("__init__", namespace)
+            with self.subTest(timeout=value), self.assertRaisesRegex(ValueError, "FFMPEG_TIMEOUT_SECONDS"):
+                initializer(types.SimpleNamespace())
+
+
 if __name__ == "__main__":
     unittest.main()
