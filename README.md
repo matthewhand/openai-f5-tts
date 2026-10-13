@@ -34,9 +34,11 @@
 - The Python wrapper is MIT-licensed. **Upstream pretrained F5-TTS model weights are CC-BY-NC** per [SWivid/F5-TTS licensing](https://github.com/SWivid/F5-TTS#license); this repository's MIT license does not grant commercial rights to those weights. Check any reference-audio and voice rights separately.
 
 
-### Resource-boundary risks under correction
+### Bounded output buffering and FFmpeg safeguards
 
-The current draft has **two source-confirmed outstanding P1 resource risks**: (1) the raw-audio response and timestamped base64 response read a complete generated file into memory without a size ceiling; and (2) FFmpeg calls for reference-audio processing and final encoding use `subprocess.run` without a timeout. A very large output can inflate memory use, and a hung subprocess can keep the one-generation admission slot occupied indefinitely. This pass will introduce an independently configured maximum returned audio payload, with an explicit 503 response on rejection, and bounded FFmpeg subprocess execution. The file limit applies to **HTTP payload reading**, not to total Torch/model memory usage or all in-flight requests; timeout behavior cannot prevent every native-library stall. No runtime, FFmpeg or model-backed claim is implied.
+- `MAX_AUDIO_OUTPUT_BYTES` (positive integer, default **16777216 = 16 MiB**) bounds each file read by **limit + 1 byte** in both `/v1/audio/speech` and the timestamped base64 route. Oversized generated output returns HTTP **503** with `Generated audio exceeds configured output limit`; the request-owned output file is removed. The size check happens **after** synthesis and encoding, so it does not prevent large intermediate audio allocations or disk writes. Even an accepted timestamped response expands during base64 encoding and JSON serialization; aggregate request memory is not independently bounded.
+- `FFMPEG_TIMEOUT_SECONDS` (positive integer, default **120**) applies separately to all **four** FFmpeg call sites: three reference-audio preparation stages and one final audio conversion. FFmpeg is invoked with `-nostdin -hide_banner -loglevel error -nostats`. On reference conversion failure or timeout, incomplete cached WAV and intermediate PCM files are discarded so a later request can retry. A request whose final encoding fails uses the existing per-request audio cleanup; a model inference stall is **not** bounded by the FFmpeg timeout.
+- These are **source-level mitigations**, verified through deterministic mocked file/subprocess and real Flask test-client regressions, **not** runtime guarantees for GPU memory, total disk usage, concurrent HTTP responses, native-library termination or multi-worker deployments. No model load, real FFmpeg or container startup was performed in this review.
 
 ### Model-cache recovery and authentication contract
 
@@ -418,7 +420,7 @@ curl -X POST http://localhost:9090/v1/audio/speech \
 ## TODO
 
 - [x] Expose OpenAI-compatible endpoint
-- [x] Fix Docker + CUDA compatibility
+- [ ] Independently verify Docker/CUDA compatibility with an approval-gated clean build and licensed model
 - [x] Multiple voice models
 - [ ] Add expression parsing for nuanced speech
 - [x] Document the checkpoint filename discovery rules (see below); independently verify the setup with licensed checkpoints before declaring this complete
@@ -436,9 +438,11 @@ python -m unittest discover -s tests -p 'test_cli.py' -v
 python -m unittest discover -s tests -p 'test_source_contract.py' -v
 python -m unittest discover -s tests -p 'test_model_cache_failure.py' -v
 python -m unittest discover -s tests -p 'test_flask_auth_integration.py' -v
+python -m unittest discover -s tests -p 'test_output_limits.py' -v
+python -m unittest discover -s tests -p 'test_reference_ffmpeg_timeout.py' -v
 ```
 
-Run all local low-load synthetic regressions with `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v` (47 tests passed in the isolated review workspace on 13 October 2026, with Flask already installed). These cover pure input validation, mock CLI behavior, process-local generation admission, mock audio encoding, source contracts, **real Flask test-client authentication**, and AST-extracted cache-load/eviction recovery. The Flask integration suite skips when Flask is not already installed; no package installation is needed for the other tests. No real model loading, working Docker build, reverse proxy or synthesized audio was validated. No GitHub Actions workflows exist in this repository and this project is not configured to run hosted CI.
+Run all local low-load synthetic regressions with `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v` (61 tests passed in the isolated review workspace on 14 October 2026, with Flask already installed). These cover pure input validation, mock CLI behavior, generation admission, bounded HTTP audio reads and oversize 503 responses, fake FFmpeg timeouts and reference-cache cleanup, source contracts, **real Flask test-client authentication**, and AST-extracted cache-load/eviction recovery. The Flask integration suite skips when Flask is not already installed; no package installation is needed for the other tests. No actual FFmpeg binary, real model loading/inference, working Docker build, reverse proxy or synthesized audio was validated. No GitHub Actions workflows exist in this repository and this project is not configured to run hosted CI.
 
 The optional CLI launcher is `python f5_tts_app/cli.py --host 127.0.0.1 --port 9090`; it launches the same API server and therefore still needs all models and dependencies installed.
 
