@@ -39,7 +39,7 @@
 - The model cache is a **bounded in-process LRU**, not persistent storage. A voice switch may evict the least recently used model *before* allocating the next model to limit peak memory; if a new checkpoint fails to load, the evicted model is **not automatically restored**. A later authorized request can reload it from disk. Never interpret discovery or a `loaded` flag as successful speech generation.
 - A failed load must leave **no partially registered model** in `loaded_models`. `MODEL_LOAD_LIMIT` must be a positive integer; a bad configuration should fail during startup instead of failing mid-request.
 - The published `/v1/models`, `/v1/voices`, `/v1/voices/all`, `/v1/loaded_models`, `/v1/audio/speech`, and `/v1/text-to-speech/{voice}/with-timestamps` routes require `Authorization: Bearer <key>` or `xi-api-key: <key>` when `REQUIRE_API_KEY=True`. Missing or invalid keys should return **401**, including malformed/non-ASCII token values; no secret should be echoed into logs or responses.
-- The planned Flask test-client verification replaces only model and gevent startup dependencies with inert fixtures. It exercises the **real Flask routing, authentication decorator and request parsing**, without inference, a listening network socket or a model download; it does **not** prove production authentication through a reverse proxy.
+- The offline Flask test-client suite exercises the **actual Flask routes and authentication decorator** while replacing Gevent and model startup with inert fixtures. It verifies Bearer and `xi-api-key` headers, missing/invalid/non-ASCII key rejection (401), explicit optional authentication bypass, invalid bodies (400), oversized bodies (413) and synthetic busy responses (503). It opens no network socket and does not run inference. It does **not** establish production reverse-proxy or model-backed authentication behavior.
 
 ### Concurrency and temporary-file status
 
@@ -430,9 +430,11 @@ Without downloading models, building containers or sending HTTP requests, run fr
 python -m unittest discover -s tests -p 'test_request_validation.py' -v
 python -m unittest discover -s tests -p 'test_cli.py' -v
 python -m unittest discover -s tests -p 'test_source_contract.py' -v
+python -m unittest discover -s tests -p 'test_model_cache_failure.py' -v
+python -m unittest discover -s tests -p 'test_flask_auth_integration.py' -v
 ```
 
-Run all local low-load synthetic regressions with `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v` (33 tests passed in the isolated review workspace on 13 October 2026). These cover input validation, the CLI, process-local generation admission, mock audio encoding and AST source contracts. They **do not** exercise real Flask authentication, model loading, a working Docker build or synthesized audio. No GitHub Actions workflows exist in this repository and this project is not configured to run hosted CI.
+Run all local low-load synthetic regressions with `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v` (47 tests passed in the isolated review workspace on 13 October 2026, with Flask already installed). These cover pure input validation, mock CLI behavior, process-local generation admission, mock audio encoding, source contracts, **real Flask test-client authentication**, and AST-extracted cache-load/eviction recovery. The Flask integration suite skips when Flask is not already installed; no package installation is needed for the other tests. No real model loading, working Docker build, reverse proxy or synthesized audio was validated. No GitHub Actions workflows exist in this repository and this project is not configured to run hosted CI.
 
 The optional CLI launcher is `python f5_tts_app/cli.py --host 127.0.0.1 --port 9090`; it launches the same API server and therefore still needs all models and dependencies installed.
 
