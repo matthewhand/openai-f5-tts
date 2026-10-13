@@ -2,7 +2,7 @@
 
 <img src="assets/images/logo.webp" alt="Project Logo" width="200"/>
 
-Welcome to **openai-f5-tts**! This project provides a user-friendly Flask-based API for generating high-quality text-to-speech (TTS) audio using **F5-TTS**, a flexible and powerful TTS engine. The API supports customizable voices, including the default voice **Emilia**, and allows for easy integration into applications requiring speech synthesis.
+**Release status: experimental / alpha (source-reviewed 13 October 2026).** This Flask/Gevent adapter exposes local F5-TTS synthesis through an OpenAI-style speech route, lists installed voices/models and supports an optional ElevenLabs-shaped timestamp response. Actual model inference, fresh-install reliability, CPU use and Docker deployment have **not** been revalidated for this revision. Do not expose this service to the public Internet.
 
 ---
 
@@ -23,12 +23,22 @@ Welcome to **openai-f5-tts**! This project provides a user-friendly Flask-based 
 
 ---
 
+## Current implementation and limitations
+
+- `POST /v1/audio/speech` generates audio using an installed F5-TTS checkpoint, a matching reference-audio file and a locally loaded Whisper transcription model. The documented `speed` parameter reaches the inference call; supported conversions use FFmpeg.
+- `GET /v1/models`, `GET /v1/voices`, `GET /v1/voices/all` and `GET /v1/loaded_models` are authenticated. Voice language metadata is **not** implemented; do not rely on language filtering.
+- `POST /v1/text-to-speech/{voice}/with-timestamps` returns base64 audio and, where duration can be read, **duration-weighted estimated timings**, *not* forced alignment. Null alignment is possible.
+- Sentence streaming is **not implemented on `main`**; see the proposed [streaming PR #6](https://github.com/matthewhand/openai-f5-tts/pull/6).
+- The Compose setup currently requires NVIDIA GPU container support and mounts local checkpoint and reference-audio folders. The installer pulls an **unpinned** upstream F5-TTS dependency; reproducible builds have not been demonstrated.
+- Security and reliability limitations: no published max text/request size, concurrency limit or live load-test evidence. `DEBUG_MODE=true` logs request bodies and may expose `xi-api-key`; leave it disabled, and use trusted local networks only.
+- The Python wrapper is MIT-licensed. **Upstream pretrained F5-TTS model weights are CC-BY-NC** per [SWivid/F5-TTS licensing](https://github.com/SWivid/F5-TTS#license); this repository's MIT license does not grant commercial rights to those weights. Check any reference-audio and voice rights separately.
+
 ## Prerequisites
 
 Before getting started, ensure you have the following installed on your system:
 
 - **Git**: For cloning the repository.
-- **Docker**: Required for Docker deployment.
+- **Docker and NVIDIA Container Toolkit**: Required for the existing GPU-focused Docker Compose configuration. The published container path has not been freshly verified.
   - **Linux Users**: Tested with `docker.io` on Ubuntu 24.04 LTS.
   - **Windows Users**: Tested with Docker Desktop on Windows 11 (using WSL2 backend).
 - **Python 3.10**: Required for development setup.
@@ -62,7 +72,8 @@ Ensure you have downloaded the necessary voice models and reference audio file:
   ```bash
   mkdir -p ckpts/Emilia
   git clone https://huggingface.co/SWivid/F5-TTS
-  mv F5-TTS/F5TTS_v1_Base/* ckpts/Emilia/
+  # Verify the upstream checkout contains a supported `model_1250000.safetensors`, `model_1250000.pt`, `model_1200000.safetensors` or `model_1200000.pt` checkpoint before copying it into ckpts/Emilia/; the model repository layout may change.
+  find F5-TTS -maxdepth 4 -type f \( -name 'model_*.safetensors' -o -name 'model_*.pt' \) -print
 
   mkdir -p ref_audio
   curl -L -o ref_audio/Emilia.wav https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
@@ -73,13 +84,15 @@ Ensure you have downloaded the necessary voice models and reference audio file:
   ```powershell
   mkdir ckpts\Emilia
   git clone https://huggingface.co/SWivid/F5-TTS
-  move F5-TTS\F5TTS_v1_Base\* ckpts\Emilia\
+  # Locate a supported checkpoint file in the downloaded model repository, then copy it into ckpts\Emilia using its recognized model_1250000 or model_1200000 filename.
 
   mkdir ref_audio
   curl.exe -L -o ref_audio\Emilia.wav https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
   ```
 
 *Note:* Cloning the F5-TTS repository may take a few minutes or longer depending on your internet connection.
+
+**Before running:** `.env.example` contains the nonfunctional placeholder `API_KEY=your_api_key_here`. Replace it with a strong private secret, and set `DEFAULT_VOICE=Emilia` to match the model folder you actually populated. Never commit `.env`. The Docker Compose file currently publishes port 9090 on all interfaces; restrict networking to trusted local use until the service is hardened.
 
 **Step 4: Set Up Environment Variables**
 
@@ -102,7 +115,7 @@ Copy `.env.example` to `.env` and update it as needed:
 - `API_KEY`: Set this to secure API access.
 - `PORT`: The port for the Flask server (default is `9090`).
 - `REQUIRE_API_KEY`: Set to `True` to enforce API key authentication.
-- `DEFAULT_VOICE`: Default voice name (e.g., "Emilia").
+- `DEFAULT_VOICE`: Set explicitly to the exact directory name under `ckpts/` (for this walkthrough: `Emilia`). **The current Compose default is `Emilia_ZH_EN`, not `Emilia`; set `DEFAULT_VOICE=Emilia` in your `.env`.**
 - `DEFAULT_RESPONSE_FORMAT`: Output audio format (e.g., `mp3`).
 
 **Step 5: Run the Application**
@@ -114,6 +127,8 @@ docker compose up --build -d
 ```
 
 *This command may take several minutes to complete, especially the first time as Docker downloads the necessary images.*
+
+**Caution:** The current Compose startup runs a full `app/test.py` inference attempt before starting the API. An authenticated models-list response does not establish that speech synthesis works; a real audio-generation smoke test must be separately approved. The default Docker profile assumes NVIDIA GPU support and may download a large Whisper model at startup.
 
 **Step 6: Access the API**
 
@@ -138,7 +153,7 @@ The API will be available at `http://localhost:9090` by default.
 Use `curl` to verify that the service is running correctly and that the "Emilia" voice model is available:
 
 ```bash
-curl http://localhost:9090/v1/models
+curl -H "Authorization: Bearer <YOUR_REAL_API_KEY>" http://127.0.0.1:9090/v1/models
 ```
 
 You should see a response listing the "Emilia" voice model.
@@ -149,7 +164,17 @@ You should see a response listing the "Emilia" voice model.
 
 If you are developing or contributing to this project, the following method allows for a more flexible setup.
 
-### Prerequisites
+### Current implementation and limitations
+
+- `POST /v1/audio/speech` generates audio using an installed F5-TTS checkpoint, a matching reference-audio file and a locally loaded Whisper transcription model. The documented `speed` parameter reaches the inference call; supported conversions use FFmpeg.
+- `GET /v1/models`, `GET /v1/voices`, `GET /v1/voices/all` and `GET /v1/loaded_models` are authenticated. Voice language metadata is **not** implemented; do not rely on language filtering.
+- `POST /v1/text-to-speech/{voice}/with-timestamps` returns base64 audio and, where duration can be read, **duration-weighted estimated timings**, *not* forced alignment. Null alignment is possible.
+- Sentence streaming is **not implemented on `main`**; see the proposed [streaming PR #6](https://github.com/matthewhand/openai-f5-tts/pull/6).
+- The Compose setup currently requires NVIDIA GPU container support and mounts local checkpoint and reference-audio folders. The installer pulls an **unpinned** upstream F5-TTS dependency; reproducible builds have not been demonstrated.
+- Security and reliability limitations: no published max text/request size, concurrency limit or live load-test evidence. `DEBUG_MODE=true` logs request bodies and may expose `xi-api-key`; leave it disabled, and use trusted local networks only.
+- The Python wrapper is MIT-licensed. **Upstream pretrained F5-TTS model weights are CC-BY-NC** per [SWivid/F5-TTS licensing](https://github.com/SWivid/F5-TTS#license); this repository's MIT license does not grant commercial rights to those weights. Check any reference-audio and voice rights separately.
+
+## Prerequisites
 
 - **Python 3.10**: Ensure Python 3.10 is installed on your system.
 - **Conda** (recommended) or `venv` for creating an isolated Python environment.
@@ -174,7 +199,7 @@ Ensure you have downloaded the necessary voice models and reference audio file:
   ```bash
   mkdir -p ckpts/Emilia
   git clone https://huggingface.co/SWivid/F5-TTS
-  mv F5-TTS/F5TTS_Base/* ckpts/Emilia/
+  # Locate a supported model_1250000 or model_1200000 checkpoint, then copy it into ckpts/Emilia/.
 
   mkdir -p ref_audio
   curl -L -o ref_audio/Emilia.wav https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
@@ -185,7 +210,7 @@ Ensure you have downloaded the necessary voice models and reference audio file:
   ```powershell
   mkdir ckpts\Emilia
   git clone https://huggingface.co/SWivid/F5-TTS
-  move F5-TTS\F5TTS_Base\* ckpts\Emilia\
+  # Locate a supported model_1250000 or model_1200000 checkpoint in the downloaded repository; copy it into ckpts\Emilia.
 
   mkdir ref_audio
   curl.exe -L -o ref_audio\Emilia.wav https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
@@ -277,7 +302,7 @@ Primary route for generating speech from text input. Requires an API key in the 
   - `voice` (string, optional): Voice model to use (default: "Emilia").
   - `response_format` (string, optional): Output audio format (default: `mp3`).
   - `speed` (float, optional): Speech speed adjustment factor.
-  - `ref_audio` (string, optional): Path to a reference audio file.
+  - `ref_audio`: **Not implemented as a per-request override.** Reference audio is resolved from the voice name under `ref_audio/`; omitting this field is recommended.
 
 - **Response**: An audio file in the specified format.
 
@@ -314,6 +339,10 @@ Lists available voices, with optional language filtering.
 - **Parameters**:
   - `language` or `locale` (optional): Language filter for voices.
 - **Response**: JSON containing the available voices.
+
+### `/v1/text-to-speech/{voice}/with-timestamps`
+
+Optional ElevenLabs-shaped route (not a promise of ElevenLabs interoperability): authenticated POST with `{"text":"Hello"}` (or `input`), and the voice in the URL. The response contains `audio_base64`, `alignment`, `normalized_alignment`, `words` and `alignment_source`. Timing is either `duration_weighted` estimated from text and audio duration, or `unavailable` with null alignment. **No forced aligner is currently connected**, even if WhisperX is installed.
 
 ### `/v1/voices/all`
 
@@ -404,26 +433,26 @@ curl -X POST http://localhost:9090/v1/audio/speech \
 - [x] Fix Docker + CUDA compatibility
 - [x] Multiple voice models
 - [ ] Add expression parsing for nuanced speech
-- [ ] Document usage for fine-tuned models
+- [x] Document the checkpoint filename discovery rules (see below); independently verify the setup with licensed checkpoints before declaring this complete
 - [ ] Enhance error handling and logging
 
 ---
 
 ## Support
 
-If you encounter any issues or have questions, feel free to open an issue on the [GitHub repository](https://github.com/matthewhand/openai-f5-tts).
+If you encounter any issues or have questions, feel free to open an issue on the [GitHub repository](https://github.com/matthewhand/openai-f5-tts). Include the API route, error and local environment but **never** API keys, private reference audio or generated text.
 
 ---
 
 ## Contributing
 
-We welcome contributions! Please read our [Contributing Guidelines](CONTRIBUTING.md) before getting started.
+Contributions are welcome through a focused issue or pull request. There is no published `CONTRIBUTING.md` yet; use this README as the current source of supported behavior.
 
 ---
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE).
+The **wrapper code** is licensed under the [MIT License](LICENSE). **Pretrained F5-TTS model weights are separately licensed CC-BY-NC** by their upstream publisher; commercial use is not granted by this repository's MIT license. Validate the terms of any additional checkpoints and reference audio you supply.
 
 ---
 
