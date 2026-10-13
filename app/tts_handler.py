@@ -286,7 +286,7 @@ class TTSHandler:
             try:
                 # Use FFmpeg to trim, resample to 16kHz, convert to mono
                 subprocess.run([
-                    "ffmpeg",
+                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-nostats",
                     "-i", ref_audio_path,
                     "-t", str(self.REF_AUDIO_LIMIT_SECONDS),  # Trim to REF_AUDIO_LIMIT_SECONDS
                     "-ar", "16000",  # Resample to 16kHz
@@ -300,7 +300,7 @@ class TTSHandler:
                 if not self.disable_pcm_normalization:
                     # Convert to raw PCM and back to WAV to normalize
                     subprocess.run([
-                        "ffmpeg",
+                        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-nostats",
                         "-y",
                         "-i", cached_audio_path,
                         "-f", "s16le",
@@ -311,7 +311,7 @@ class TTSHandler:
                     logging.info("Audio converted to PCM.")
 
                     subprocess.run([
-                        "ffmpeg",
+                        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-nostats",
                         "-y",
                         "-f", "s16le",
                         "-ar", "16000",
@@ -491,7 +491,7 @@ class TTSHandler:
                 out_tmp = tempfile.NamedTemporaryFile(delete=False, suffix="." + fmt)
                 converted_path = out_tmp.name
                 out_tmp.close()
-                command = ["ffmpeg", "-y", "-i", wav_path, "-c:a", self._get_ffmpeg_codec(fmt)]
+                command = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-nostats", "-y", "-i", wav_path, "-c:a", self._get_ffmpeg_codec(fmt)]
                 # Raw PCM has no container header, so ffmpeg needs an explicit muxer.
                 if fmt == "pcm":
                     command.extend(["-f", "s16le"])
