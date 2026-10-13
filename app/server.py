@@ -11,10 +11,17 @@ from argparse import ArgumentParser
 from tts_handler import TTSHandler
 from utils import require_api_key, AUDIO_FORMAT_MIME_TYPES
 from alignment import build_alignment
+from request_validation import parse_speech_request, parse_timestamp_request, RequestValidationError
 
 # Initialize Flask app and load environment variables
 app = Flask(__name__)
 load_dotenv()
+# Inbound payloads are bounded before Flask parses JSON. One request must not
+# enqueue arbitrarily large text into the expensive synthesis pipeline.
+app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_REQUEST_BYTES', '65536'))
+MAX_TEXT_CHARS = int(os.getenv('MAX_TEXT_CHARS', '2000'))
+if app.config['MAX_CONTENT_LENGTH'] <= 0 or MAX_TEXT_CHARS <= 0:
+    raise ValueError('MAX_REQUEST_BYTES and MAX_TEXT_CHARS must be positive')
 
 # Parse command-line arguments
 parser = ArgumentParser(description="F5-TTS Server")
@@ -56,15 +63,9 @@ logging.info(f"Debug mode is {'enabled' if DEBUG_MODE else 'disabled'}.")
 @app.before_request
 def log_request_info():
     if DEBUG_MODE:
-        # Redact Authorization header
-        redacted_headers = {k: ('***' if 'authorization' in k.lower() else v)
-                            for k, v in request.headers.items()}
-        logging.debug(f"HTTP Request: {request.method} {request.url}")
-        logging.debug(f"Headers: {redacted_headers}")
-        if request.is_json:
-            logging.debug(f"Payload: {request.json}")
-        else:
-            logging.debug("Payload: Non-JSON or empty.")
+        # Never log headers, URL query parameters or synthesis text: credentials
+        # can arrive in either Authorization or xi-api-key, and text is private.
+        logging.debug('HTTP Request: %s %s', request.method, request.path)
 
 # Initialize TTSHandler with CLI arguments and DEFAULT_VOICE
 tts_handler = TTSHandler(
@@ -131,17 +132,18 @@ def text_to_speech():
     Returns:
         Audio file in the requested format.
     """
-    data = request.json
-
-    # Validate request body
-    if not data or 'input' not in data:
-        return jsonify({"error": "Missing 'input' in request body"}), 400
-
-    # Extract parameters from request body with defaults
-    text = data.get('input')
-    voice = data.get('voice') or DEFAULT_VOICE  # Use DEFAULT_VOICE if not provided or empty
-    response_format = data.get('response_format', DEFAULT_RESPONSE_FORMAT)
-    speed = float(data.get('speed', DEFAULT_SPEED))
+    try:
+        params = parse_speech_request(
+            request.get_json(silent=True),
+            default_voice=DEFAULT_VOICE,
+            default_format=DEFAULT_RESPONSE_FORMAT,
+            default_speed=DEFAULT_SPEED,
+            max_text_chars=MAX_TEXT_CHARS,
+        )
+    except RequestValidationError as exc:
+        return jsonify({"error": str(exc)}), 400
+    text, voice = params["text"], params["voice"]
+    response_format, speed = params["response_format"], params["speed"]
 
     # Determine MIME type based on response format
     mime_type = AUDIO_FORMAT_MIME_TYPES.get(response_format.lower(), "audio/mpeg")
@@ -169,32 +171,24 @@ def text_to_speech():
 
 
 
-def _output_format_to_ext(output_format):
-    raw = (output_format or DEFAULT_RESPONSE_FORMAT or "mp3").lower()
-    if raw.startswith("wav") or raw == "pcm":
-        return "wav"
-    if raw.startswith("ogg") or raw.startswith("opus"):
-        return "ogg"
-    if raw.startswith("flac"):
-        return "flac"
-    return "mp3"
-
 
 @app.route("/v1/text-to-speech/<voice_id>/with-timestamps", methods=["POST"])
 @require_api_key
 def text_to_speech_with_timestamps(voice_id):
     """ElevenLabs-shaped timestamps. Missing aligner software does not fail TTS."""
-    data = request.json or {}
-    text = data.get("text") or data.get("input")
-    if not text:
-        return jsonify({"error": "Missing 'text' in request body"}), 400
-
-    voice = voice_id or DEFAULT_VOICE
-    settings = data.get("voice_settings") or {}
-    speed = float(data.get("speed", settings.get("speed", DEFAULT_SPEED)))
-    response_format = _output_format_to_ext(
-        request.args.get("output_format") or data.get("response_format")
-    )
+    try:
+        params = parse_timestamp_request(
+            request.get_json(silent=True),
+            voice=voice_id or DEFAULT_VOICE,
+            default_format=DEFAULT_RESPONSE_FORMAT,
+            default_speed=DEFAULT_SPEED,
+            output_format=request.args.get("output_format"),
+            max_text_chars=MAX_TEXT_CHARS,
+        )
+    except RequestValidationError as exc:
+        return jsonify({"error": str(exc)}), 400
+    text, voice = params["text"], params["voice"]
+    response_format, speed = params["response_format"], params["speed"]
     mime_type = AUDIO_FORMAT_MIME_TYPES.get(response_format.lower(), "audio/mpeg")
 
     try:
