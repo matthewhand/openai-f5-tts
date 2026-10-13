@@ -29,7 +29,9 @@ def getenv_bool(name: str, default: bool = False) -> bool:
 API_KEY = os.getenv('API_KEY', 'your_api_key_here')
 REQUIRE_API_KEY = getenv_bool('REQUIRE_API_KEY', True)
 
-if not API_KEY or API_KEY == 'your_api_key_here':
+# A secret is mandatory when authentication is enabled. The explicitly
+# unauthenticated local mode must not require a dummy placeholder credential.
+if REQUIRE_API_KEY and (not API_KEY or API_KEY == 'your_api_key_here'):
     raise ValueError("API_KEY must be set in the environment or .env file.")
 
 def require_api_key(f):
