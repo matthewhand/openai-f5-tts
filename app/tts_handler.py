@@ -186,9 +186,20 @@ class TTSHandler:
         # Never register an incomplete model after a failed load. Because the
         # old model was evicted before allocation to cap peak memory, it stays
         # unloaded; later requests may reload that voice from disk.
-        model = load_model(DiT, self.F5TTS_MODEL_CONFIG, model_path)
-        if model is None:
-            raise RuntimeError('Voice checkpoint loader returned no model')
+        try:
+            model = load_model(DiT, self.F5TTS_MODEL_CONFIG, model_path)
+            if model is None:
+                raise RuntimeError('Voice checkpoint loader returned no model')
+        except Exception:
+            # A failed allocation may leave collectable Python/GPU objects.
+            # Do not mask the original checkpoint failure if cleanup also fails.
+            try:
+                gc.collect()
+                if self.device.type == "cuda":
+                    torch.cuda.empty_cache()
+            except Exception:
+                logging.warning("Post-failure model allocator cleanup failed", exc_info=True)
+            raise
         self.loaded_models[voice_name] = model  # Add to loaded models (LRU order)
         logging.info(f"Loaded model for voice: {voice_name}")
         return model
