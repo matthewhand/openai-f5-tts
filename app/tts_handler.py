@@ -44,6 +44,8 @@ class TTSHandler:
         self.REF_AUDIO_DIR = "ref_audio/"  # Directory containing reference audio files
 
         self.MODEL_LOAD_LIMIT = int(os.getenv("MODEL_LOAD_LIMIT", "1"))
+        if self.MODEL_LOAD_LIMIT < 1:
+            raise ValueError('MODEL_LOAD_LIMIT must be at least 1')
         self.REF_AUDIO_LIMIT_SECONDS = int(os.getenv("REF_AUDIO_LIMIT_SECONDS", "20"))
         self.REF_AUDIO_CACHE_DIR = "ref_audio_cache"
         os.makedirs(self.REF_AUDIO_CACHE_DIR, exist_ok=True)
@@ -178,7 +180,12 @@ class TTSHandler:
 
         # Load the requested model
         model_path = self.available_models[voice_name]
+        # Never register an incomplete model after a failed load. Because the
+        # old model was evicted before allocation to cap peak memory, it stays
+        # unloaded; later requests may reload that voice from disk.
         model = load_model(DiT, self.F5TTS_MODEL_CONFIG, model_path)
+        if model is None:
+            raise RuntimeError('Voice checkpoint loader returned no model')
         self.loaded_models[voice_name] = model  # Add to loaded models (LRU order)
         logging.info(f"Loaded model for voice: {voice_name}")
         return model
