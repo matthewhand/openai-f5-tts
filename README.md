@@ -30,7 +30,7 @@
 - `POST /v1/text-to-speech/{voice}/with-timestamps` returns base64 audio and, where duration can be read, **duration-weighted estimated timings**, *not* forced alignment. Null alignment is possible.
 - Sentence streaming is **not implemented on `main`**; see the proposed [streaming PR #6](https://github.com/matthewhand/openai-f5-tts/pull/6).
 - The Compose setup currently requires NVIDIA GPU container support and mounts local checkpoint and reference-audio folders. The installer pulls an **unpinned** upstream F5-TTS dependency; reproducible builds have not been demonstrated.
-- Security and reliability limitations: no published max text/request size, concurrency limit or live load-test evidence. `DEBUG_MODE=true` logs request bodies and may expose `xi-api-key`; leave it disabled, and use trusted local networks only.
+- Requests are now bounded by `MAX_REQUEST_BYTES` (default 65536) and `MAX_TEXT_CHARS` (default 2000), speeds are restricted to 0.25–4, and model swaps/inference are serialized in-process. HTTP/body/secret debug logging has been removed. **No live load testing or multi-worker safety proof exists.** Keep this bound to trusted local networks.
 - The Python wrapper is MIT-licensed. **Upstream pretrained F5-TTS model weights are CC-BY-NC** per [SWivid/F5-TTS licensing](https://github.com/SWivid/F5-TTS#license); this repository's MIT license does not grant commercial rights to those weights. Check any reference-audio and voice rights separately.
 
 ## Prerequisites
@@ -92,7 +92,7 @@ Ensure you have downloaded the necessary voice models and reference audio file:
 
 *Note:* Cloning the F5-TTS repository may take a few minutes or longer depending on your internet connection.
 
-**Before running:** `.env.example` contains the nonfunctional placeholder `API_KEY=your_api_key_here`. Replace it with a strong private secret, and set `DEFAULT_VOICE=Emilia` to match the model folder you actually populated. Never commit `.env`. The Docker Compose file currently publishes port 9090 on all interfaces; restrict networking to trusted local use until the service is hardened.
+**Before running:** `.env.example` contains the nonfunctional placeholder `API_KEY=your_api_key_here`. Replace it with a strong private secret, and set `DEFAULT_VOICE=Emilia` to match the model folder you actually populated. Never commit `.env`. Docker Compose now publishes port 9090 **only on host loopback** (`127.0.0.1:9090`). Do not forward this port externally.
 
 **Step 4: Set Up Environment Variables**
 
@@ -114,8 +114,8 @@ Copy `.env.example` to `.env` and update it as needed:
 
 - `API_KEY`: Set this to secure API access.
 - `PORT`: The port for the Flask server (default is `9090`).
-- `REQUIRE_API_KEY`: Set to `True` to enforce API key authentication.
-- `DEFAULT_VOICE`: Set explicitly to the exact directory name under `ckpts/` (for this walkthrough: `Emilia`). **The current Compose default is `Emilia_ZH_EN`, not `Emilia`; set `DEFAULT_VOICE=Emilia` in your `.env`.**
+- `REQUIRE_API_KEY`: Keep `True` (default) to enforce API key authentication. Disabling it creates an unauthenticated endpoint.
+- `DEFAULT_VOICE`: Set explicitly to the exact directory name under `ckpts/` (for this walkthrough: `Emilia`). The current Compose default is also `Emilia`; its checkpoint and `ref_audio/Emilia.wav` must exist.
 - `DEFAULT_RESPONSE_FORMAT`: Output audio format (e.g., `mp3`).
 
 **Step 5: Run the Application**
@@ -128,7 +128,7 @@ docker compose up --build -d
 
 *This command may take several minutes to complete, especially the first time as Docker downloads the necessary images.*
 
-**Caution:** The current Compose startup runs a full `app/test.py` inference attempt before starting the API. An authenticated models-list response does not establish that speech synthesis works; a real audio-generation smoke test must be separately approved. The default Docker profile assumes NVIDIA GPU support and may download a large Whisper model at startup.
+**Caution:** Compose now starts the API directly, rather than running a potentially failing inference test first. An authenticated models-list response **does not** establish that actual synthesis works. The Docker profile assumes NVIDIA GPU support and may download the large Whisper model at startup; an audio smoke test needs separate approval.
 
 **Step 6: Access the API**
 
@@ -156,7 +156,7 @@ Use `curl` to verify that the service is running correctly and that the "Emilia"
 curl -H "Authorization: Bearer <YOUR_REAL_API_KEY>" http://127.0.0.1:9090/v1/models
 ```
 
-You should see a response listing the "Emilia" voice model.
+You should see a `models` list if initialization succeeds, but a model can appear as loaded without any successful speech request. Confirm actual audio only with an approved local inference smoke test.
 
 ---
 
@@ -164,17 +164,7 @@ You should see a response listing the "Emilia" voice model.
 
 If you are developing or contributing to this project, the following method allows for a more flexible setup.
 
-### Current implementation and limitations
-
-- `POST /v1/audio/speech` generates audio using an installed F5-TTS checkpoint, a matching reference-audio file and a locally loaded Whisper transcription model. The documented `speed` parameter reaches the inference call; supported conversions use FFmpeg.
-- `GET /v1/models`, `GET /v1/voices`, `GET /v1/voices/all` and `GET /v1/loaded_models` are authenticated. Voice language metadata is **not** implemented; do not rely on language filtering.
-- `POST /v1/text-to-speech/{voice}/with-timestamps` returns base64 audio and, where duration can be read, **duration-weighted estimated timings**, *not* forced alignment. Null alignment is possible.
-- Sentence streaming is **not implemented on `main`**; see the proposed [streaming PR #6](https://github.com/matthewhand/openai-f5-tts/pull/6).
-- The Compose setup currently requires NVIDIA GPU container support and mounts local checkpoint and reference-audio folders. The installer pulls an **unpinned** upstream F5-TTS dependency; reproducible builds have not been demonstrated.
-- Security and reliability limitations: no published max text/request size, concurrency limit or live load-test evidence. `DEBUG_MODE=true` logs request bodies and may expose `xi-api-key`; leave it disabled, and use trusted local networks only.
-- The Python wrapper is MIT-licensed. **Upstream pretrained F5-TTS model weights are CC-BY-NC** per [SWivid/F5-TTS licensing](https://github.com/SWivid/F5-TTS#license); this repository's MIT license does not grant commercial rights to those weights. Check any reference-audio and voice rights separately.
-
-## Prerequisites
+### Prerequisites
 
 - **Python 3.10**: Ensure Python 3.10 is installed on your system.
 - **Conda** (recommended) or `venv` for creating an isolated Python environment.
@@ -437,6 +427,19 @@ curl -X POST http://localhost:9090/v1/audio/speech \
 - [ ] Enhance error handling and logging
 
 ---
+
+## Local offline regression checks
+
+Without downloading models, building containers or sending HTTP requests, run from the repository root:
+
+```bash
+python -m unittest discover -s tests -p 'test_request_validation.py' -v
+python -m unittest discover -s tests -p 'test_cli.py' -v
+```
+
+These only validate pure request parsing and mock the alternative CLI launcher. They do **not** prove model loading, authentication middleware, a working Docker build or synthesized audio. No GitHub Actions workflows exist in this repository and this project is not configured to run hosted CI.
+
+The optional CLI launcher is `python f5_tts_app/cli.py --host 127.0.0.1 --port 9090`; it launches the same API server and therefore still needs all models and dependencies installed.
 
 ## Support
 
