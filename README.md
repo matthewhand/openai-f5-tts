@@ -34,6 +34,10 @@
 - The Python wrapper is MIT-licensed. **Upstream pretrained F5-TTS model weights are CC-BY-NC** per [SWivid/F5-TTS licensing](https://github.com/SWivid/F5-TTS#license); this repository's MIT license does not grant commercial rights to those weights. Check any reference-audio and voice rights separately.
 
 
+### Resource-boundary risks under correction
+
+The current draft has **two source-confirmed outstanding P1 resource risks**: (1) the raw-audio response and timestamped base64 response read a complete generated file into memory without a size ceiling; and (2) FFmpeg calls for reference-audio processing and final encoding use `subprocess.run` without a timeout. A very large output can inflate memory use, and a hung subprocess can keep the one-generation admission slot occupied indefinitely. This pass will introduce an independently configured maximum returned audio payload, with an explicit 503 response on rejection, and bounded FFmpeg subprocess execution. The file limit applies to **HTTP payload reading**, not to total Torch/model memory usage or all in-flight requests; timeout behavior cannot prevent every native-library stall. No runtime, FFmpeg or model-backed claim is implied.
+
 ### Model-cache recovery and authentication contract
 
 - The model cache is a **bounded in-process LRU**, not persistent storage. A voice switch may evict the least recently used model *before* allocating the next model to limit peak memory; if a new checkpoint fails to load, the evicted model is **not automatically restored**. A later authorized request can reload it from disk. Never interpret discovery or a `loaded` flag as successful speech generation.
