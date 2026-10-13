@@ -12,6 +12,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "app"))
 from generation_gate import SynthesisBusyError
+from output_limits import AudioOutputTooLarge
 from request_validation import parse_speech_request, parse_timestamp_request
 
 server_source = (ROOT / "app" / "server.py").read_text(encoding="utf-8")
@@ -45,6 +46,7 @@ class BusyEndpointTests(unittest.TestCase):
             "parse_timestamp_request": parse_timestamp_request,
             "RequestValidationError": ValueError,
             "SynthesisBusyError": SynthesisBusyError,
+            "AudioOutputTooLarge": AudioOutputTooLarge,
             "DEFAULT_VOICE": "Emilia",
             "DEFAULT_RESPONSE_FORMAT": "mp3",
             "DEFAULT_SPEED": 1.0,
