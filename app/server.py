@@ -41,6 +41,11 @@ parser.add_argument(
     default=int(os.getenv('PORT', 9090)),
     help="Port to run the server on."
 )
+parser.add_argument(
+    "--host",
+    default=os.getenv("HOST", "0.0.0.0"),
+    help="Host interface to bind (default: 0.0.0.0 for Docker)."
+)
 args = parser.parse_args()
 
 # Load configuration from environment variables with defaults
@@ -291,7 +296,7 @@ def get_loaded_models():
 if __name__ == '__main__':
     logging.info(f"F5-TTS API running on http://localhost:{PORT}")
     # Start the server using Gevent WSGI server for better concurrency support
-    http_server = WSGIServer(('0.0.0.0', PORT), app)
+    http_server = WSGIServer((args.host, PORT), app)
     try:
         http_server.serve_forever()
     except KeyboardInterrupt:
