@@ -92,6 +92,9 @@ class EncodingTests(unittest.TestCase):
         self.assertEqual(Path(path).read_bytes(), b"synthetic-encoded")
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(self.run_kwargs[0]['timeout'], 7)
+        self.assertIn("-nostdin", self.calls[0])
+        self.assertIn("-loglevel", self.calls[0])
+        self.assertIn("-nostats", self.calls[0])
 
     def test_pcm_uses_explicit_raw_muxer(self):
         path = self.encode("pcm")
