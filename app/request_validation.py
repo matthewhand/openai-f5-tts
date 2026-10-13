@@ -21,7 +21,9 @@ def parse_speech_request(data, *, default_voice, default_format, default_speed, 
     if len(text) > max_text_chars:
         raise RequestValidationError("'input' exceeds the configured text limit")
 
-    voice = data.get("voice") or default_voice
+    voice = data.get("voice")
+    if voice is None or voice == "":
+        voice = default_voice
     if not isinstance(voice, str) or not voice or len(voice) > 128:
         raise RequestValidationError("'voice' must be a nonempty string of at most 128 characters")
 
@@ -67,6 +69,8 @@ def parse_timestamp_request(data, *, voice, default_format, default_speed, outpu
         encoding = "opus"
     elif raw_format.startswith("flac"):
         encoding = "flac"
+    elif raw_format.startswith("aac"):
+        encoding = "aac"
     elif raw_format.startswith("mp3"):
         encoding = "mp3"
     else:
