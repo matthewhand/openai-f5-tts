@@ -59,7 +59,10 @@ def require_api_key(f):
             return jsonify({"error": "Missing authentication: provide 'Authorization: Bearer <token>' or 'xi-api-key: <token>' header"}), 401
 
         # Validate the token against the stored API key
-        if not hmac.compare_digest(token, API_KEY):
+        # compare_digest(str, str) rejects non-ASCII input with TypeError.
+        # UTF-8 bytes preserve constant-time comparison while malformed keys
+        # are denied with 401 rather than becoming an HTTP 500.
+        if not hmac.compare_digest(token.encode('utf-8'), API_KEY.encode('utf-8')):
             logging.warning("Invalid API key provided.")
             return jsonify({"error": "Invalid API key"}), 401
 
