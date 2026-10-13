@@ -9,6 +9,7 @@ import torch
 import subprocess
 import gc  # Import garbage collection
 from collections import OrderedDict
+from gevent.lock import Semaphore
 from safetensors.torch import save_file, load_file
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 from f5_tts.model import DiT
@@ -49,6 +50,9 @@ class TTSHandler:
         self.retain_cache = retain_cache
         self.disable_pcm_normalization = disable_pcm_normalization
         self.default_voice = default_voice
+        # Gevent serves cooperative request handlers sharing this mutable model cache.
+        # Serialize model swaps and inference; overlapping GPU jobs are unsafe here.
+        self._inference_lock = Semaphore(1)
 
         self.cleanup_cache()
         self.processor, self.whisper_model = self.load_whisper_model()
@@ -161,9 +165,14 @@ class TTSHandler:
         # Enforce the model load limit
         if len(self.loaded_models) >= self.MODEL_LOAD_LIMIT:
             # Unload the least recently used (LRU) model
-            lru_model_name, _ = self.loaded_models.popitem(last=False)
-            logging.info(f"Unloading model: {lru_model_name}")
-            self.unload_voice_model(lru_model_name)
+            lru_model_name, lru_model = self.loaded_models.popitem(last=False)
+            logging.info("Evicting model: %s", lru_model_name)
+            # The model was already removed from the LRU dictionary. Drop the
+            # last local reference *before* allocating the replacement model.
+            del lru_model
+            gc.collect()
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
 
         # Load the requested model
         model_path = self.available_models[voice_name]
@@ -345,7 +354,7 @@ class TTSHandler:
             generated_ids = self.whisper_model.generate(inputs)
 
         transcription = self.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        logging.debug(f"Transcription result: {transcription}")
+        logging.debug("Reference transcription produced %d characters", len(transcription))
         return transcription
 
     def infer(self, gen_text, voice_name, model, speed=1.0):
@@ -362,7 +371,7 @@ class TTSHandler:
             tuple: (sample_rate, audio_data)
         """
         try:
-            logging.debug(f"Generating speech for voice '{voice_name}': {gen_text}")
+            logging.debug("Generating speech for voice %r (%d text characters)", voice_name, len(gen_text))
             ref_text = self.transcribe_audio(voice_name)
 
             ref_audio_path = self.process_reference_audio(voice_name)
@@ -396,7 +405,7 @@ class TTSHandler:
         Returns:
             str: Path to the generated audio file.
         """
-        logging.debug(f"generate_speech called with: text={text}, voice={voice}, response_format={response_format}, speed={speed}")
+        logging.debug("generate_speech request: voice=%r format=%r speed=%s characters=%d", voice, response_format, speed, len(text) if isinstance(text, str) else 0)
 
         if not text:
             logging.error("No text available for TTS generation.")
@@ -408,11 +417,11 @@ class TTSHandler:
 
         try:
             # Load the requested voice model (prioritize this model)
-            model = self.load_voice_model(voice)
-            logging.info(f"Using model for voice: {voice}")
-
-            # Perform inference
-            sample_rate, audio_data = self.infer(text, voice, model, speed=speed)
+            with self._inference_lock:
+                model = self.load_voice_model(voice)
+                logging.info("Using model for voice: %s", voice)
+                # The shared cache is not safe across concurrent inference/model swaps.
+                sample_rate, audio_data = self.infer(text, voice, model, speed=speed)
             
             # Write to WAV first (soundfile doesn't support mp3/opus/aac directly)
             wav_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
