@@ -34,6 +34,13 @@
 - The Python wrapper is MIT-licensed. **Upstream pretrained F5-TTS model weights are CC-BY-NC** per [SWivid/F5-TTS licensing](https://github.com/SWivid/F5-TTS#license); this repository's MIT license does not grant commercial rights to those weights. Check any reference-audio and voice rights separately.
 
 
+### Model-cache recovery and authentication contract
+
+- The model cache is a **bounded in-process LRU**, not persistent storage. A voice switch may evict the least recently used model *before* allocating the next model to limit peak memory; if a new checkpoint fails to load, the evicted model is **not automatically restored**. A later authorized request can reload it from disk. Never interpret discovery or a `loaded` flag as successful speech generation.
+- A failed load must leave **no partially registered model** in `loaded_models`. `MODEL_LOAD_LIMIT` must be a positive integer; a bad configuration should fail during startup instead of failing mid-request.
+- The published `/v1/models`, `/v1/voices`, `/v1/voices/all`, `/v1/loaded_models`, `/v1/audio/speech`, and `/v1/text-to-speech/{voice}/with-timestamps` routes require `Authorization: Bearer <key>` or `xi-api-key: <key>` when `REQUIRE_API_KEY=True`. Missing or invalid keys should return **401**, including malformed/non-ASCII token values; no secret should be echoed into logs or responses.
+- The planned Flask test-client verification replaces only model and gevent startup dependencies with inert fixtures. It exercises the **real Flask routing, authentication decorator and request parsing**, without inference, a listening network socket or a model download; it does **not** prove production authentication through a reverse proxy.
+
 ### Concurrency and temporary-file status
 
 The draft branch now rejects simultaneous synthesis work with HTTP 503 inside one process. A separate request-owned encoder removes partial WAV/converted files after success or failure; deterministic mock-backed regressions exercise both paths. The Python server still has **no cross-process admission mechanism**, no proved scheduling fairness and no model-backed concurrent load measurements. Avoid multiple workers or exposing the API on untrusted networks until an independent release review.
