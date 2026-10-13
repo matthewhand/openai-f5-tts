@@ -7,6 +7,8 @@ import importlib.util
 import logging
 import os
 from pathlib import Path
+import base64
+import tempfile
 import sys
 import types
 import unittest
@@ -145,6 +147,48 @@ class RealFlaskAuthTests(unittest.TestCase):
             headers={"xi-api-key": SECRET, "Content-Type": "application/json"})
         self.assertEqual(response.status_code, 413)
         self.assertEqual(self.fake_handler.calls, [])
+
+    def test_raw_audio_oversize_returns_503_and_deletes_request_file(self):
+        with tempfile.TemporaryDirectory(prefix="f5-mock-output-") as tmp:
+            path = Path(tmp) / "synthetic.mp3"
+            path.write_bytes(b"x" * 18)
+            with mock.patch.object(self.fake_handler, "generate_speech", return_value=str(path)), \
+                 mock.patch.object(self.server, "MAX_AUDIO_OUTPUT_BYTES", 8):
+                response = self.client.post("/v1/audio/speech", json={"input": "fictional"},
+                    headers={"Authorization": "Bearer " + SECRET})
+            self.assertEqual(response.status_code, 503)
+            self.assertFalse(path.exists())
+            self.assertEqual(response.get_json()["error"], "Generated audio exceeds configured output limit")
+
+    def test_timestamp_audio_oversize_returns_503_and_deletes_request_file(self):
+        with tempfile.TemporaryDirectory(prefix="f5-mock-output-") as tmp:
+            path = Path(tmp) / "synthetic.mp3"
+            path.write_bytes(b"x" * 18)
+            with mock.patch.object(self.fake_handler, "generate_speech", return_value=str(path)), \
+                 mock.patch.object(self.server, "MAX_AUDIO_OUTPUT_BYTES", 8):
+                response = self.client.post("/v1/text-to-speech/Emilia/with-timestamps",
+                    json={"text": "fictional"}, headers={"xi-api-key": SECRET})
+            self.assertEqual(response.status_code, 503)
+            self.assertFalse(path.exists())
+
+    def test_bounded_audio_and_timestamp_success_with_fake_file(self):
+        for route, payload in (
+            ("/v1/audio/speech", {"input": "fictional"}),
+            ("/v1/text-to-speech/Emilia/with-timestamps", {"text": "fictional"}),
+        ):
+            with self.subTest(route=route), tempfile.TemporaryDirectory(prefix="f5-mock-") as tmp:
+                path = Path(tmp) / "synthetic.mp3"
+                path.write_bytes(b"12345678")
+                with mock.patch.object(self.fake_handler, "generate_speech", return_value=str(path)), \
+                     mock.patch.object(self.server, "MAX_AUDIO_OUTPUT_BYTES", 8):
+                    response = self.client.post(route, json=payload,
+                            headers={"Authorization": "Bearer " + SECRET})
+                self.assertEqual(response.status_code, 200)
+                self.assertFalse(path.exists())
+                if route.endswith("with-timestamps"):
+                    self.assertEqual(base64.b64decode(response.get_json()["audio_base64"]), b"12345678")
+                else:
+                    self.assertEqual(response.data, b"12345678")
 
     def test_disabled_auth_setting_is_explicit_and_visible(self):
         with mock.patch.object(self.utils, "REQUIRE_API_KEY", False):
