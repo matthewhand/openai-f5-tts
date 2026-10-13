@@ -31,6 +31,10 @@ class ReferenceTimeoutTests(unittest.TestCase):
         def fake_run(args, **kwargs):
             self.calls.append(kwargs)
             self.assertEqual(kwargs["timeout"], 5)
+            self.assertIn("-nostdin", args)
+            self.assertIn("-hide_banner", args)
+            self.assertIn("-loglevel", args)
+            self.assertIn("-nostats", args)
             Path(args[-1]).write_bytes(b"partial fictitious audio")
             if len(self.calls) == self.fail_call:
                 raise subprocess.TimeoutExpired(args, kwargs["timeout"])
