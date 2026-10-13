@@ -73,7 +73,7 @@ Choose an approved source and confirm you accept the model's license before down
 - Expected SHA-256: `670900fd14e6c458b95da6e9ed317cdb20dbaf7a1c02ac06a05475a9d32b6a38`
 - Destination: `ckpts/Emilia/model_1250000.safetensors`
 
-**Linux/macOS (example commands; not executed):**
+**Linux (example commands; not executed):**
 
 ```bash
 mkdir -p ckpts/Emilia ref_audio
@@ -94,7 +94,7 @@ curl.exe -fL -o ckpts/Emilia/model_1250000.safetensors "https://huggingface.co/S
 curl.exe -fL -o ref_audio/Emilia.wav "https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav"
 ```
 
-The *example* reference audio comes from the upstream project and remains subject to its own rights. You may instead supply appropriately licensed/consented audio as `ref_audio/Emilia.wav`. The reference-audio URL above is not pinned; verify source integrity before relying on it in production. Never use untrusted pickle-based `.pt` checkpoints.
+On macOS, use `shasum -a 256 ckpts/Emilia/model_1250000.safetensors` and compare the printed digest with the expected SHA-256 above; `sha256sum` is generally not preinstalled. The *example* reference audio comes from the upstream project and remains subject to its own rights. You may instead supply appropriately licensed/consented audio as `ref_audio/Emilia.wav`. The reference-audio URL above is not pinned; verify source integrity before relying on it in production. Never use untrusted pickle-based `.pt` checkpoints.
 
 **Before running:** `.env.example` contains the nonfunctional placeholder `API_KEY=your_api_key_here`. Replace it with a strong private secret, and set `DEFAULT_VOICE=Emilia` to match the model folder you actually populated. Never commit `.env`. Docker Compose now publishes port 9090 **only on host loopback** (`127.0.0.1:9090`). Do not forward this port externally.
 
@@ -415,6 +415,7 @@ Without downloading models, building containers or sending HTTP requests, run fr
 ```bash
 python -m unittest discover -s tests -p 'test_request_validation.py' -v
 python -m unittest discover -s tests -p 'test_cli.py' -v
+python -m unittest discover -s tests -p 'test_source_contract.py' -v
 ```
 
 These only validate pure request parsing and mock the alternative CLI launcher. They do **not** prove model loading, authentication middleware, a working Docker build or synthesized audio. No GitHub Actions workflows exist in this repository and this project is not configured to run hosted CI.
