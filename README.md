@@ -10,7 +10,7 @@
 
 - [Prerequisites](#prerequisites)
 - [Deployment Instructions](#deployment-instructions)
-  - [Using Docker Compose (Recommended for Deployment)](#using-docker-compose-recommended-for-deployment)
+  - [Using Docker Compose (Experimental Local Preview)](#using-docker-compose-experimental-local-preview)
 - [Development Setup](#development-setup)
   - [Prerequisites](#prerequisites-1)
   - [Installation Steps](#installation-steps)
@@ -53,9 +53,9 @@ Before getting started, ensure you have the following installed on your system:
 
 ## Deployment Instructions
 
-### Using Docker Compose (Recommended for Deployment)
+### Using Docker Compose (Experimental Local Preview)
 
-This method simplifies deployment by encapsulating the entire application, including dependencies, into a Docker container.
+This experimental Compose configuration packages the Flask application and its dependencies; it has **not** passed a clean build or real speech acceptance test. It requires a prepared, legally usable checkpoint and audio sample before it is functional.
 
 **Step 1: Ensure Docker is Installed**
 
@@ -191,7 +191,7 @@ cd openai-f5-tts
 
 **Step 2: Prepare the same checkpoint and reference audio**
 
-Follow the pinned **F5-TTS v1** model instructions in the [Docker installation section](#using-docker-compose-recommended-for-deployment), including license review and SHA-256 verification. The development and Docker paths use the same `ckpts/Emilia/` and `ref_audio/Emilia.wav` layout. Do not clone an entire model repository unnecessarily.
+Follow the pinned **F5-TTS v1** model instructions in the [Docker installation section](#using-docker-compose-experimental-local-preview), including license review and SHA-256 verification. The development and Docker paths use the same `ckpts/Emilia/` and `ref_audio/Emilia.wav` layout. Do not clone an entire model repository unnecessarily.
 
 **Step 3: Create a Python Environment**
 
@@ -425,7 +425,7 @@ python -m unittest discover -s tests -p 'test_cli.py' -v
 python -m unittest discover -s tests -p 'test_source_contract.py' -v
 ```
 
-Run all local low-load synthetic regressions with `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v` (30 tests passed in the isolated review workspace on 13 October 2026). These cover input validation, the CLI, process-local generation admission, mock audio encoding and AST source contracts. They **do not** exercise real Flask authentication, model loading, a working Docker build or synthesized audio. No GitHub Actions workflows exist in this repository and this project is not configured to run hosted CI.
+Run all local low-load synthetic regressions with `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v` (33 tests passed in the isolated review workspace on 13 October 2026). These cover input validation, the CLI, process-local generation admission, mock audio encoding and AST source contracts. They **do not** exercise real Flask authentication, model loading, a working Docker build or synthesized audio. No GitHub Actions workflows exist in this repository and this project is not configured to run hosted CI.
 
 The optional CLI launcher is `python f5_tts_app/cli.py --host 127.0.0.1 --port 9090`; it launches the same API server and therefore still needs all models and dependencies installed.
 
