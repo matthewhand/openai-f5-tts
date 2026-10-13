@@ -63,34 +63,38 @@ git clone https://github.com/matthewhand/openai-f5-tts
 cd openai-f5-tts
 ```
 
-**Step 3: Download Required Voice Models**
+**Step 3: Prepare a licensed F5-TTS v1 checkpoint (large download)**
 
-Ensure you have downloaded the necessary voice models and reference audio file:
+The original instructions cloned the whole multi-gigabyte Hugging Face model repository. This application only needs the **v1 Base** checkpoint in a folder matching the voice name. The upstream publisher identifies `F5TTS_v1_Base/model_1250000.safetensors` as the v1 model; the file is approximately **1.35 GB**, is stored using Git LFS/Xet and is licensed **CC-BY-NC-4.0**. This download is optional and **has not been performed or runtime-tested during this review**.
 
-- **Linux/macOS:**
+Choose an approved source and confirm you accept the model's license before downloading. The following pinned file and checksum are published by [SWivid on Hugging Face](https://huggingface.co/SWivid/F5-TTS/blob/d6bd6c3c3ec65c0a3ef25a6d3d09658c5e2817fd/F5TTS_v1_Base/model_1250000.safetensors):
 
-  ```bash
-  mkdir -p ckpts/Emilia
-  git clone https://huggingface.co/SWivid/F5-TTS
-  # Verify the upstream checkout contains a supported `model_1250000.safetensors`, `model_1250000.pt`, `model_1200000.safetensors` or `model_1200000.pt` checkpoint before copying it into ckpts/Emilia/; the model repository layout may change.
-  find F5-TTS -maxdepth 4 -type f \( -name 'model_*.safetensors' -o -name 'model_*.pt' \) -print
+- Source revision: `d6bd6c3c3ec65c0a3ef25a6d3d09658c5e2817fd`
+- Expected SHA-256: `670900fd14e6c458b95da6e9ed317cdb20dbaf7a1c02ac06a05475a9d32b6a38`
+- Destination: `ckpts/Emilia/model_1250000.safetensors`
 
-  mkdir -p ref_audio
-  curl -L -o ref_audio/Emilia.wav https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
-  ```
+**Linux/macOS (example commands; not executed):**
 
-- **Windows (Command Prompt/PowerShell):**
+```bash
+mkdir -p ckpts/Emilia ref_audio
+curl -fL --retry 3 -o ckpts/Emilia/model_1250000.safetensors \
+  https://huggingface.co/SWivid/F5-TTS/resolve/d6bd6c3c3ec65c0a3ef25a6d3d09658c5e2817fd/F5TTS_v1_Base/model_1250000.safetensors
+echo "670900fd14e6c458b95da6e9ed317cdb20dbaf7a1c02ac06a05475a9d32b6a38  ckpts/Emilia/model_1250000.safetensors" | sha256sum -c -
+curl -fL -o ref_audio/Emilia.wav \
+  https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
+```
 
-  ```powershell
-  mkdir ckpts\Emilia
-  git clone https://huggingface.co/SWivid/F5-TTS
-  # Locate a supported checkpoint file in the downloaded model repository, then copy it into ckpts\Emilia using its recognized model_1250000 or model_1200000 filename.
+**Windows PowerShell (example commands; not executed):**
 
-  mkdir ref_audio
-  curl.exe -L -o ref_audio\Emilia.wav https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
-  ```
+```powershell
+New-Item -ItemType Directory -Force ckpts/Emilia, ref_audio | Out-Null
+curl.exe -fL -o ckpts/Emilia/model_1250000.safetensors "https://huggingface.co/SWivid/F5-TTS/resolve/d6bd6c3c3ec65c0a3ef25a6d3d09658c5e2817fd/F5TTS_v1_Base/model_1250000.safetensors"
+(Get-FileHash ckpts/Emilia/model_1250000.safetensors -Algorithm SHA256).Hash
+# Compare the output to the SHA-256 above; do not proceed if it differs.
+curl.exe -fL -o ref_audio/Emilia.wav "https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav"
+```
 
-*Note:* Cloning the F5-TTS repository may take a few minutes or longer depending on your internet connection.
+The *example* reference audio comes from the upstream project and remains subject to its own rights. You may instead supply appropriately licensed/consented audio as `ref_audio/Emilia.wav`. The reference-audio URL above is not pinned; verify source integrity before relying on it in production. Never use untrusted pickle-based `.pt` checkpoints.
 
 **Before running:** `.env.example` contains the nonfunctional placeholder `API_KEY=your_api_key_here`. Replace it with a strong private secret, and set `DEFAULT_VOICE=Emilia` to match the model folder you actually populated. Never commit `.env`. Docker Compose now publishes port 9090 **only on host loopback** (`127.0.0.1:9090`). Do not forward this port externally.
 
@@ -180,33 +184,9 @@ git clone https://github.com/matthewhand/openai-f5-tts
 cd openai-f5-tts
 ```
 
-**Step 2: Download Required Voice Models**
+**Step 2: Prepare the same checkpoint and reference audio**
 
-Ensure you have downloaded the necessary voice models and reference audio file:
-
-- **Linux/macOS:**
-
-  ```bash
-  mkdir -p ckpts/Emilia
-  git clone https://huggingface.co/SWivid/F5-TTS
-  # Locate a supported model_1250000 or model_1200000 checkpoint, then copy it into ckpts/Emilia/.
-
-  mkdir -p ref_audio
-  curl -L -o ref_audio/Emilia.wav https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
-  ```
-
-- **Windows (Command Prompt/PowerShell):**
-
-  ```powershell
-  mkdir ckpts\Emilia
-  git clone https://huggingface.co/SWivid/F5-TTS
-  # Locate a supported model_1250000 or model_1200000 checkpoint in the downloaded repository; copy it into ckpts\Emilia.
-
-  mkdir ref_audio
-  curl.exe -L -o ref_audio\Emilia.wav https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
-  ```
-
-*Note:* Cloning the F5-TTS repository may take a few minutes or longer depending on your internet connection.
+Follow the pinned **F5-TTS v1** model instructions in the [Docker installation section](#using-docker-compose-recommended-for-deployment), including license review and SHA-256 verification. The development and Docker paths use the same `ckpts/Emilia/` and `ref_audio/Emilia.wav` layout. Do not clone an entire model repository unnecessarily.
 
 **Step 3: Create a Python Environment**
 
