@@ -30,13 +30,13 @@
 - `POST /v1/text-to-speech/{voice}/with-timestamps` returns base64 audio and, where duration can be read, **duration-weighted estimated timings**, *not* forced alignment. Null alignment is possible.
 - Sentence streaming is **not implemented on `main`**; see the proposed [streaming PR #6](https://github.com/matthewhand/openai-f5-tts/pull/6).
 - The Compose setup currently requires NVIDIA GPU container support and mounts local checkpoint and reference-audio folders. The installer pulls an **unpinned** upstream F5-TTS dependency; reproducible builds have not been demonstrated.
-- Incoming JSON requests are bounded by `MAX_REQUEST_BYTES` (default 65536) and `MAX_TEXT_CHARS` (default 2000); speed must be between 0.25 and 4. The current model-cache semaphore serializes inference **only within one server process**. It does not bound waiting requests or independent FFmpeg conversions. Do not expose the service to untrusted clients. HTTP/body/credential debug logging has been removed, but upstream libraries and external process logs have not been independently audited.
+- Incoming JSON requests are bounded by `MAX_REQUEST_BYTES` (default 65536) and `MAX_TEXT_CHARS` (default 2000); speed must be between 0.25 and 4. A **process-local, non-blocking single-generation gate** now covers model inference and audio conversion. A second simultaneous request receives HTTP **503** rather than waiting behind a growing queue. This is **not** a cross-process or cluster-wide limit. HTTP/body/credential debug logging has been removed, but upstream library logs are not independently audited.
 - The Python wrapper is MIT-licensed. **Upstream pretrained F5-TTS model weights are CC-BY-NC** per [SWivid/F5-TTS licensing](https://github.com/SWivid/F5-TTS#license); this repository's MIT license does not grant commercial rights to those weights. Check any reference-audio and voice rights separately.
 
 
-### Release-blocking concurrency and file-lifecycle gaps
+### Concurrency and temporary-file status
 
-Review of the draft branch identified unbounded waiting synthesis requests and possible intermediate WAV files left behind if file writing or conversion fails. These are **known incomplete areas** until corrected and covered by offline synthetic regressions. The in-process model lock does not provide cross-process admission control or a cluster-wide resource limit.
+The draft branch now rejects simultaneous synthesis work with HTTP 503 inside one process. A separate request-owned encoder removes partial WAV/converted files after success or failure; deterministic mock-backed regressions exercise both paths. The Python server still has **no cross-process admission mechanism**, no proved scheduling fairness and no model-backed concurrent load measurements. Avoid multiple workers or exposing the API on untrusted networks until an independent release review.
 
 ## Prerequisites
 
@@ -265,6 +265,8 @@ The API will be accessible at `http://localhost:9090`.
 
 ## API Endpoints
 
+**Busy behavior:** both synthesis endpoints return HTTP `503` and `{"error": "Speech generator busy; try again later"}` if another request already owns the single local generation slot. Non-speech list endpoints are unaffected. This behavior is only process-local.
+
 ### `/v1/audio/speech`
 
 Primary route for generating speech from text input. Requires an API key in the request header as a Bearer token.
@@ -423,7 +425,7 @@ python -m unittest discover -s tests -p 'test_cli.py' -v
 python -m unittest discover -s tests -p 'test_source_contract.py' -v
 ```
 
-These only validate pure request parsing and mock the alternative CLI launcher. They do **not** prove model loading, authentication middleware, a working Docker build or synthesized audio. No GitHub Actions workflows exist in this repository and this project is not configured to run hosted CI.
+Run all local low-load synthetic regressions with `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v` (30 tests passed in the isolated review workspace on 13 October 2026). These cover input validation, the CLI, process-local generation admission, mock audio encoding and AST source contracts. They **do not** exercise real Flask authentication, model loading, a working Docker build or synthesized audio. No GitHub Actions workflows exist in this repository and this project is not configured to run hosted CI.
 
 The optional CLI launcher is `python f5_tts_app/cli.py --host 127.0.0.1 --port 9090`; it launches the same API server and therefore still needs all models and dependencies installed.
 
