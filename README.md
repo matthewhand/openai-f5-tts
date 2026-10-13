@@ -30,8 +30,13 @@
 - `POST /v1/text-to-speech/{voice}/with-timestamps` returns base64 audio and, where duration can be read, **duration-weighted estimated timings**, *not* forced alignment. Null alignment is possible.
 - Sentence streaming is **not implemented on `main`**; see the proposed [streaming PR #6](https://github.com/matthewhand/openai-f5-tts/pull/6).
 - The Compose setup currently requires NVIDIA GPU container support and mounts local checkpoint and reference-audio folders. The installer pulls an **unpinned** upstream F5-TTS dependency; reproducible builds have not been demonstrated.
-- Requests are now bounded by `MAX_REQUEST_BYTES` (default 65536) and `MAX_TEXT_CHARS` (default 2000), speeds are restricted to 0.25–4, and model swaps/inference are serialized in-process. HTTP/body/secret debug logging has been removed. **No live load testing or multi-worker safety proof exists.** Keep this bound to trusted local networks.
+- Incoming JSON requests are bounded by `MAX_REQUEST_BYTES` (default 65536) and `MAX_TEXT_CHARS` (default 2000); speed must be between 0.25 and 4. The current model-cache semaphore serializes inference **only within one server process**. It does not bound waiting requests or independent FFmpeg conversions. Do not expose the service to untrusted clients. HTTP/body/credential debug logging has been removed, but upstream libraries and external process logs have not been independently audited.
 - The Python wrapper is MIT-licensed. **Upstream pretrained F5-TTS model weights are CC-BY-NC** per [SWivid/F5-TTS licensing](https://github.com/SWivid/F5-TTS#license); this repository's MIT license does not grant commercial rights to those weights. Check any reference-audio and voice rights separately.
+
+
+### Release-blocking concurrency and file-lifecycle gaps
+
+Review of the draft branch identified unbounded waiting synthesis requests and possible intermediate WAV files left behind if file writing or conversion fails. These are **known incomplete areas** until corrected and covered by offline synthetic regressions. The in-process model lock does not provide cross-process admission control or a cluster-wide resource limit.
 
 ## Prerequisites
 
