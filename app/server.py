@@ -11,6 +11,7 @@ from tts_handler import TTSHandler
 from utils import require_api_key, AUDIO_FORMAT_MIME_TYPES
 from alignment import build_alignment
 from request_validation import parse_speech_request, parse_timestamp_request, RequestValidationError
+from generation_gate import SynthesisBusyError
 
 # Initialize Flask app and load environment variables
 app = Flask(__name__)
@@ -148,6 +149,8 @@ def text_to_speech():
     except ValueError as e:
         logging.error(f"ValueError during TTS generation: {e}")
         return jsonify({"error": str(e)}), 400
+    except SynthesisBusyError:
+        return jsonify({"error": "Speech generator busy; try again later"}), 503
     except RuntimeError as e:
         logging.error(f"RuntimeError during TTS generation: {e}")
         return jsonify({"error": str(e)}), 500
@@ -194,6 +197,8 @@ def text_to_speech_with_timestamps(voice_id):
             "words": words,
             "alignment_source": source,
         })
+    except SynthesisBusyError:
+        return jsonify({"error": "Speech generator busy; try again later"}), 503
     except ValueError as e:
         logging.error(f"ValueError during timestamped TTS: {e}")
         return jsonify({"error": str(e)}), 400
