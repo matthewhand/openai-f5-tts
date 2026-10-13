@@ -19,6 +19,8 @@ ENCODE = next(n for n in HANDLER.body if isinstance(n, ast.FunctionDef) and n.na
 
 
 class _FakeHandler:
+    FFMPEG_TIMEOUT_SECONDS = 7
+
     def _get_ffmpeg_codec(self, name):
         return {"mp3": "libmp3lame", "pcm": "pcm_s16le", "wav": "pcm_s16le"}.get(name, name)
 
@@ -30,6 +32,8 @@ class EncodingTests(unittest.TestCase):
         self.calls = []
         self.write_fails = False
         self.conversion_fails = False
+        self.conversion_times_out = False
+        self.run_kwargs = []
 
         def fake_write(path, data, samplerate):
             Path(path).write_bytes(b"synthetic-wav")
@@ -38,9 +42,12 @@ class EncodingTests(unittest.TestCase):
 
         def fake_run(args, **kwargs):
             self.calls.append(args)
+            self.run_kwargs.append(kwargs)
             Path(args[-1]).write_bytes(b"synthetic-encoded")
             if self.conversion_fails:
                 raise subprocess.CalledProcessError(1, args)
+            if self.conversion_times_out:
+                raise subprocess.TimeoutExpired(args, timeout=kwargs['timeout'])
             return None
 
         fake_tempfile = types.SimpleNamespace(
@@ -84,6 +91,7 @@ class EncodingTests(unittest.TestCase):
         self.assertEqual(self.files(), [Path(path)])
         self.assertEqual(Path(path).read_bytes(), b"synthetic-encoded")
         self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.run_kwargs[0]['timeout'], 7)
 
     def test_pcm_uses_explicit_raw_muxer(self):
         path = self.encode("pcm")
@@ -100,6 +108,12 @@ class EncodingTests(unittest.TestCase):
         self.conversion_fails = True
         with self.assertRaises(subprocess.CalledProcessError):
             self.encode("mp3")
+        self.assertEqual(self.files(), [])
+
+    def test_ffmpeg_timeout_removes_partial_output_and_wav(self):
+        self.conversion_times_out = True
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.encode('mp3')
         self.assertEqual(self.files(), [])
 
     def test_unknown_format_does_not_create_files(self):
