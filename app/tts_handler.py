@@ -21,6 +21,7 @@ from f5_tts.infer.utils_infer import (
     remove_silence_for_generated_wav
 )
 from utils import AUDIO_FORMAT_MIME_TYPES
+from generation_gate import GenerationGate
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -53,6 +54,7 @@ class TTSHandler:
         # Gevent serves cooperative request handlers sharing this mutable model cache.
         # Serialize model swaps and inference; overlapping GPU jobs are unsafe here.
         self._inference_lock = Semaphore(1)
+        self._generation_gate = GenerationGate()
 
         self.cleanup_cache()
         self.processor, self.whisper_model = self.load_whisper_model()
@@ -393,6 +395,13 @@ class TTSHandler:
             raise RuntimeError("Failed to generate speech.")
 
     def generate_speech(self, text, voice='Emilia', response_format='mp3', speed=1.0):
+        """Fail fast if a process-local synthesis request is already active."""
+        with self._generation_gate.claim():
+            return self._generate_speech_claimed(
+                text, voice=voice, response_format=response_format, speed=speed
+            )
+
+    def _generate_speech_claimed(self, text, voice='Emilia', response_format='mp3', speed=1.0):
         """
         Generates and saves speech audio from text for a specific voice.
 
@@ -423,45 +432,56 @@ class TTSHandler:
                 # The shared cache is not safe across concurrent inference/model swaps.
                 sample_rate, audio_data = self.infer(text, voice, model, speed=speed)
             
-            # Write to WAV first (soundfile doesn't support mp3/opus/aac directly)
-            wav_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-            sf.write(wav_temp.name, audio_data, sample_rate)
-            wav_temp.close()
-            
-            # Convert to requested format if not WAV
-            if response_format.lower() == 'wav':
-                output_path = wav_temp.name
-            else:
-                output_temp = tempfile.NamedTemporaryFile(delete=False, suffix=f".{response_format}")
-                output_path = output_temp.name
-                output_temp.close()
-                
-                try:
-                    subprocess.run([
-                        "ffmpeg", "-y", "-i", wav_temp.name,
-                        "-c:a", self._get_ffmpeg_codec(response_format),
-                        output_path
-                    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    logging.info(f"Converted audio to {response_format}: {output_path}")
-                except subprocess.CalledProcessError as e:
-                    logging.error(f"FFmpeg conversion failed: {e.stderr.decode()}")
-                    try:
-                        os.remove(output_path)
-                    except OSError:
-                        pass
-                    raise RuntimeError(f"Failed to convert audio to {response_format}")
-                finally:
-                    try:
-                        os.remove(wav_temp.name)
-                    except OSError:
-                        pass
-            
-            logging.info(f"Generated speech saved to {output_path}")
+            output_path = self._write_audio_file(sample_rate, audio_data, response_format)
+            logging.info("Generated speech audio for voice %s", voice)
             return output_path
         except Exception as e:
             logging.error(f"Error in generate_speech: {e}")
             raise RuntimeError("Failed to generate speech.")
     
+    def _write_audio_file(self, sample_rate, audio_data, response_format):
+        """Encode one request, removing partial WAV and converted files on any error.
+
+        Each temporary file is closed before another library opens it, including
+        on Windows. Only the successfully returned output remains for the HTTP
+        request handler to consume and delete.
+        """
+        fmt = response_format.lower()
+        if fmt not in AUDIO_FORMAT_MIME_TYPES:
+            raise ValueError("Unsupported response format")
+        wav_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        wav_path = wav_tmp.name
+        wav_tmp.close()
+        converted_path = None
+        retained_path = None
+        try:
+            sf.write(wav_path, audio_data, sample_rate)
+            if fmt == "wav":
+                retained_path = wav_path
+            else:
+                out_tmp = tempfile.NamedTemporaryFile(delete=False, suffix="." + fmt)
+                converted_path = out_tmp.name
+                out_tmp.close()
+                command = ["ffmpeg", "-y", "-i", wav_path, "-c:a", self._get_ffmpeg_codec(fmt)]
+                # Raw PCM has no container header, so ffmpeg needs an explicit muxer.
+                if fmt == "pcm":
+                    command.extend(["-f", "s16le"])
+                command.append(converted_path)
+                subprocess.run(
+                    command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                )
+                retained_path = converted_path
+            return retained_path
+        finally:
+            for path in (wav_path, converted_path):
+                if path and path != retained_path:
+                    try:
+                        os.remove(path)
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        logging.warning("Could not delete incomplete generated audio")
+
     def _get_ffmpeg_codec(self, format_name):
         """Map response format to ffmpeg codec."""
         codecs = {
