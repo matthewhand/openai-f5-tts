@@ -21,6 +21,7 @@ from f5_tts.infer.utils_infer import (
 )
 from utils import AUDIO_FORMAT_MIME_TYPES
 from sentences import split_sentences
+from model_config import model_config_for
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -169,7 +170,7 @@ class TTSHandler:
 
         # Load the requested model
         model_path = self.available_models[voice_name]
-        model = load_model(DiT, self.F5TTS_MODEL_CONFIG, model_path)
+        model = load_model(DiT, model_config_for(model_path), model_path)
         self.loaded_models[voice_name] = model  # Add to loaded models (LRU order)
         logging.info(f"Loaded model for voice: {voice_name}")
         return model

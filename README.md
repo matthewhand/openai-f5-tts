@@ -383,6 +383,8 @@ Options:
 
 Enhance the TTS system by adding your own fine-tuned voice model. Follow these steps:
 
+> **v0 vs v1 checkpoints.** F5-TTS v0 checkpoints (`model_1200000.*`) need different model flags than v1 (`model_1250000.*`); loading one with the other's settings gives babble rather than an error. The server picks the config from the filename. For anything else, put a `model_config.json` next to the checkpoint, e.g. `{"text_mask_padding": false, "pe_attn_head": 1}` (merged over the v1 defaults).
+
 **Step 1: Create a Directory for Your Voice Model**
 
 - **Linux/macOS:**
