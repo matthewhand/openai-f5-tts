@@ -26,9 +26,9 @@
 ## Current implementation and limitations
 
 - `POST /v1/audio/speech` generates audio using an installed F5-TTS checkpoint, a matching reference-audio file and a locally loaded Whisper transcription model. The documented `speed` parameter reaches the inference call; supported conversions use FFmpeg.
-- `GET /v1/models`, `GET /v1/voices`, `GET /v1/voices/all` and `GET /v1/loaded_models` are authenticated. Voice language metadata is **not** implemented; do not rely on language filtering.
+- `GET /v1/models`, `GET /v1/voices`, `GET /v1/voices/all` and `GET /v1/loaded_models` are authenticated. Voice language metadata is **not** implemented; `/v1/voices?language=...` or `?locale=...` currently returns an empty `voices` list for nonempty filters, not a working language-filtered result.
 - `POST /v1/text-to-speech/{voice}/with-timestamps` returns base64 audio and, where duration can be read, **duration-weighted estimated timings**, *not* forced alignment. Null alignment is possible.
-- Sentence streaming is **not implemented on `main`**; see the proposed [streaming PR #6](https://github.com/matthewhand/openai-f5-tts/pull/6).
+- Sentence streaming is **not implemented in this draft branch or on `main`**; see the proposed [streaming PR #6](https://github.com/matthewhand/openai-f5-tts/pull/6).
 - The Compose setup currently requires NVIDIA GPU container support and mounts local checkpoint and reference-audio folders. The installer pulls an **unpinned** upstream F5-TTS dependency; reproducible builds have not been demonstrated.
 - **Checkpoint path-trust guard (source-only verified):** discovery now checks that the configured checkpoint root and its ancestors are not symlinks, and that voice directories and selected `.safetensors` files are real directories / singly linked regular files, not symlinks or hardlinks. Immediately before loading a previously discovered voice, the path is checked again **before any loaded model is evicted**. A stale or substituted path fails without invoking the model loader. Keep the checkpoint tree trusted and immutable to less-privileged writers: pathname checks cannot eliminate **replacement races** between validation and the upstream loader opening the file. This does **not** prove file authenticity, content format, signature, integrity, permission confinement or licensing. Live inference and Windows-native path behavior are unverified.
 - **Checkpoint loading is native-safetensors-only.** The wrapper discovers `model_1250000.safetensors` first, or `model_1200000.safetensors`; it does **not** deserialize or automatically convert legacy pickle-based `.pt` files. Users with only `.pt` checkpoints must obtain a genuine `.safetensors` export from a trusted offline training/export environment before using this branch. Do not simply rename a `.pt` file.
@@ -143,9 +143,9 @@ Copy `.env.example` to `.env` and update it as needed:
 **Key Environment Variables:**
 
 - `API_KEY`: Set this to secure API access.
-- `PORT`: The port for the Flask server (default is `9090`).
+- `PORT`: The server port defaults to `9090`. The supplied Compose file explicitly sets it to `9090` regardless of an alternate value in `.env`.
 - `REQUIRE_API_KEY`: Keep `True` (default) to enforce API key authentication. With `True`, supply a non-placeholder `API_KEY`. Setting `False` disables authentication and permits startup without a key **only if the server bind is an explicit numeric loopback IP**: set `HOST=127.0.0.1` or pass `--host 127.0.0.1`. The container normally listens on `0.0.0.0` internally, so **Compose must not start in unauthenticated mode**, even though its published host port is currently loopback. `localhost` hostnames are intentionally rejected when authentication is disabled.
-- `DEFAULT_VOICE`: Set explicitly to the exact directory name under `ckpts/` (for this walkthrough: `Emilia`). The current Compose default is also `Emilia`; its checkpoint and `ref_audio/Emilia.wav` must exist.
+- `DEFAULT_VOICE`: Set explicitly to the exact directory name under `ckpts/` (for this walkthrough: `Emilia`). The current Compose default is also `Emilia`; its checkpoint and `ref_audio/Emilia.wav` must exist. Reference audio is selected automatically as `ref_audio/<voice>` plus a supported extension; `REF_AUDIO_PATH` is not read by the API.
 - `DEFAULT_RESPONSE_FORMAT`: Output audio format (e.g., `mp3`).
 
 **Step 5: Run the Application**
@@ -277,10 +277,10 @@ Copy `.env.example` to `.env` and update the variables as needed:
 Start the Flask server locally:
 
 ```bash
-python app/server.py
+python app/server.py --host 127.0.0.1
 ```
 
-The API will be accessible at `http://localhost:9090`.
+With this explicit loopback bind, the API will be accessible at `http://127.0.0.1:9090`. Without `--host` or `HOST`, the Python server defaults to binding `0.0.0.0` when authentication is enabled; do not use that default for a local-only preview.
 
 ---
 
@@ -290,16 +290,16 @@ The API will be accessible at `http://localhost:9090`.
 
 ### `/v1/audio/speech`
 
-Primary route for generating speech from text input. Requires an API key in the request header as a Bearer token.
+Primary route for generating speech from text input. With the default `REQUIRE_API_KEY=True`, supply a Bearer token or an `xi-api-key` header. Authentication can be disabled only with an explicit numeric loopback bind as explained above.
 
 - **URL**: `/v1/audio/speech`
 - **Method**: `POST`
 - **Headers**: `Authorization: Bearer <API_KEY>`
 - **Data (JSON)**:
   - `input` (string): The text to convert to speech.
-  - `voice` (string, optional): Voice model to use (default: "Emilia").
-  - `response_format` (string, optional): Output audio format (default: `mp3`).
-  - `speed` (float, optional): Speech speed adjustment factor.
+  - `voice` (string, optional): Discovered voice name; defaults to `DEFAULT_VOICE` (`Emilia` unless configured otherwise).
+  - `response_format` (string, optional): `mp3`, `wav`, `flac`, `aac`, `opus` or `pcm`; defaults to `DEFAULT_RESPONSE_FORMAT` (`mp3` unless configured otherwise).
+  - `speed` (number, optional): Between `0.25` and `4` inclusive; defaults to `DEFAULT_SPEED` (`1.0` unless configured otherwise).
   - `ref_audio`: **Not implemented as a per-request override.** Reference audio is resolved from the voice name under `ref_audio/`; omitting this field is recommended.
 
 - **Response**: An audio file in the specified format.
@@ -329,14 +329,14 @@ Lists available TTS models.
 
 ### `/v1/voices`
 
-Lists available voices, with optional language filtering.
+Lists names of discovered voices. Language metadata and actual language filtering are **not implemented**.
 
 - **URL**: `/v1/voices`
 - **Method**: `GET`
 - **Headers**: `Authorization: Bearer <API_KEY>`
 - **Parameters**:
-  - `language` or `locale` (optional): Language filter for voices.
-- **Response**: JSON containing the available voices.
+  - `language` or `locale` (optional): Accepted by the route, but a nonempty filter currently returns `{"voices": []}` because discovered model records have no language metadata. Omit it to list all discovered voice names.
+- **Response**: JSON containing a `voices` array of names.
 
 ### `/v1/text-to-speech/{voice}/with-timestamps`
 
@@ -350,6 +350,12 @@ Lists all supported voices, regardless of language.
 - **Method**: `GET`
 - **Headers**: `Authorization: Bearer <API_KEY>`
 - **Response**: JSON containing all supported voices.
+
+---
+
+### `/v1/loaded_models`
+
+Reports names of voice models currently present in the in-process model cache, not proof that they have produced audio. Authenticated `GET`; response is JSON with a `loaded_models` array. Cache contents can change after voice switches.
 
 ---
 
@@ -427,7 +433,7 @@ curl -X POST http://localhost:9090/v1/audio/speech \
 
 ## TODO
 
-- [x] Expose OpenAI-compatible endpoint
+- [x] Expose an OpenAI-style `/v1/audio/speech` endpoint (not full OpenAI API compatibility)
 - [ ] Independently verify Docker/CUDA compatibility with an approval-gated clean build and licensed model
 - [x] Multiple voice models
 - [ ] Add expression parsing for nuanced speech
