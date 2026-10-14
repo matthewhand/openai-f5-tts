@@ -114,6 +114,8 @@ class TTSHandler:
         # Fail closed before walking a symlinked checkpoint root.
         validate_checkpoint_root(self.CKPTS_DIR)
         for folder in os.listdir(self.CKPTS_DIR):
+            if os.path.isfile(os.path.join(self.CKPTS_DIR, folder)):
+                continue  # README.md, .gitkeep etc. are not voices
             model_path = None
             for name in CHECKPOINT_NAMES:
                 path = os.path.join(self.CKPTS_DIR, folder, name)

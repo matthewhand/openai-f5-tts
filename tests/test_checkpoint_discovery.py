@@ -61,6 +61,15 @@ class CheckpointDiscoveryTests(unittest.TestCase):
         self.assertEqual(self.handler.available_models,
                          {"Native": str(voice / "model_1250000.safetensors")})
 
+    def test_stray_files_in_ckpts_root_are_ignored_without_warning(self):
+        (self.root / "README.md").write_text("docs")
+        (self.root / ".gitkeep").write_text("")
+        voice = self.add_voice("Native", "model_1250000.safetensors")
+        with self.assertNoLogs(level="WARNING"):
+            discover_from_source(self.handler)
+        self.assertEqual(self.handler.available_models,
+                         {"Native": str(voice / "model_1250000.safetensors")})
+
     def test_legacy_pt_checkpoint_not_discovered(self):
         self.add_voice("Legacy", "model_1250000.pt", "model_1200000.pt")
         discover_from_source(self.handler)
