@@ -2,7 +2,7 @@
 
 <img src="assets/images/logo.webp" alt="Project Logo" width="200"/>
 
-**Release status: experimental / alpha (source-reviewed 13 October 2026).** This Flask/Gevent adapter exposes local F5-TTS synthesis through an OpenAI-style speech route, lists installed voices/models and supports an optional ElevenLabs-shaped timestamp response. Actual model inference, fresh-install reliability, CPU use and Docker deployment have **not** been revalidated for this revision. Do not expose this service to the public Internet.
+**Release status: experimental / alpha (source-reviewed 14 October 2026).** This Flask/Gevent adapter exposes local F5-TTS synthesis through an OpenAI-style speech route, lists installed voices/models and supports an optional ElevenLabs-shaped timestamp response. Actual model inference, fresh-install reliability, CPU use and Docker deployment have **not** been revalidated for this revision. Do not expose this service to the public Internet.
 
 ---
 
