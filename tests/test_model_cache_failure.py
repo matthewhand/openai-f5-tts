@@ -18,6 +18,9 @@ CLASS = next(n for n in SOURCE.body if isinstance(n, ast.ClassDef) and n.name ==
 
 
 def compiled_method(name, namespace):
+    # Cache semantics use a fake checkpoint loader and paths; dedicated path
+    # tests exercise the actual on-disk path validator separately.
+    namespace.setdefault("validate_checkpoint_path", lambda root, voice, path: path)
     method = next(n for n in CLASS.body if isinstance(n, ast.FunctionDef) and n.name == name)
     method = ast.FunctionDef(
         name=method.name, args=method.args, body=method.body,
@@ -51,7 +54,8 @@ class CacheFailureTests(unittest.TestCase):
         self.load = compiled_method("load_voice_model", namespace)
         self.handler = types.SimpleNamespace(
             loaded_models=OrderedDict(), available_models={"A": "fixture-A", "B": "fixture-B", "C": "fixture-C"},
-            MODEL_LOAD_LIMIT=1, F5TTS_MODEL_CONFIG={}, device=types.SimpleNamespace(type="cpu"),
+            MODEL_LOAD_LIMIT=1, F5TTS_MODEL_CONFIG={}, CKPTS_DIR="fictional-ckpts",
+            device=types.SimpleNamespace(type="cpu"),
         )
 
     def test_cache_hit_reuses_object(self):
