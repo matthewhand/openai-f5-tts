@@ -30,6 +30,7 @@
 - `POST /v1/text-to-speech/{voice}/with-timestamps` returns base64 audio and, where duration can be read, **duration-weighted estimated timings**, *not* forced alignment. Null alignment is possible.
 - Sentence streaming is **not implemented on `main`**; see the proposed [streaming PR #6](https://github.com/matthewhand/openai-f5-tts/pull/6).
 - The Compose setup currently requires NVIDIA GPU container support and mounts local checkpoint and reference-audio folders. The installer pulls an **unpinned** upstream F5-TTS dependency; reproducible builds have not been demonstrated.
+- **Checkpoint loading is native-safetensors-only.** The wrapper discovers `model_1250000.safetensors` first, or `model_1200000.safetensors`; it does **not** deserialize or automatically convert legacy pickle-based `.pt` files. Users with only `.pt` checkpoints must obtain a genuine `.safetensors` export from a trusted offline training/export environment before using this branch. Do not simply rename a `.pt` file.
 - Incoming JSON requests are bounded by `MAX_REQUEST_BYTES` (default 65536) and `MAX_TEXT_CHARS` (default 2000); speed must be between 0.25 and 4. A **process-local, non-blocking single-generation gate** now covers model inference and audio conversion. A second simultaneous request receives HTTP **503** rather than waiting behind a growing queue. This is **not** a cross-process or cluster-wide limit. HTTP/body/credential debug logging has been removed, but upstream library logs are not independently audited.
 - The Python wrapper is MIT-licensed. **Upstream pretrained F5-TTS model weights are CC-BY-NC** per [SWivid/F5-TTS licensing](https://github.com/SWivid/F5-TTS#license); this repository's MIT license does not grant commercial rights to those weights. Check any reference-audio and voice rights separately.
 
@@ -367,18 +368,18 @@ Enhance the TTS system by adding your own fine-tuned voice model. Follow these s
 
 **Step 2: Add the Model File**
 
-Place the `model_1200000.pt` file from your fine-tuning into the new folder:
+Use a trusted **native safetensors export** of your fine-tuning checkpoint named `model_1200000.safetensors` (or `model_1250000.safetensors`). The service no longer discovers `.pt` files and **does not** convert them automatically; obtain the export separately in your trusted training environment. Changing the extension of a `.pt` file is not a conversion. Never load an untrusted pickle checkpoint merely to export it.
 
 - **Linux/macOS:**
 
   ```bash
-  mv path_to_your_checkpoint/model_1200000.pt ckpts/MyVoice/
+  mv path_to_your_checkpoint/model_1200000.safetensors ckpts/MyVoice/
   ```
 
 - **Windows (Command Prompt/PowerShell):**
 
   ```powershell
-  move path_to_your_checkpoint\model_1200000.pt ckpts\MyVoice\
+  move path_to_your_checkpoint\model_1200000.safetensors ckpts\MyVoice\
   ```
 
 **Step 3: Add Reference Audio**
@@ -397,9 +398,9 @@ Add a reference audio file in the `ref_audio/` directory:
   move path_to_ref_audio\MyVoice.wav ref_audio\
   ```
 
-**Step 4: First Run**
+**Step 4: Verify the checkpoint format**
 
-The `.pt` file will automatically be converted to `.safetensors` on the first run for efficiency.
+Confirm you have a regular file under `ckpts/MyVoice/` ending in `.safetensors`, not merely a renamed `.pt` file. No automatic `.pt` conversion occurs. Checkpoints must be trusted and licensed; the extension check is **not** a guarantee that an arbitrary model file is safe or functional. The service cannot be called release-ready until actual licensed-model inference is separately approved and verified.
 
 **Step 5: Use the New Voice**
 
@@ -444,7 +445,7 @@ python -m unittest discover -s tests -p 'test_output_limits.py' -v
 python -m unittest discover -s tests -p 'test_reference_ffmpeg_timeout.py' -v
 ```
 
-Run all local low-load synthetic regressions with `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v` (65 tests passed in the isolated review workspace on 14 October 2026, with Flask already installed; the model-cache and real-Flask suites also passed **independently**). These cover pure input validation, mock CLI behavior, generation admission, bounded HTTP audio reads and oversize 503 responses, fake FFmpeg timeouts and reference-cache cleanup, source contracts, **real Flask test-client authentication**, and AST-extracted cache-load/eviction recovery. The Flask integration suite skips when Flask is not already installed; no package installation is needed for the other tests. No actual FFmpeg binary, real model loading/inference, working Docker build, reverse proxy or synthesized audio was validated. No GitHub Actions workflows exist in this repository and this project is not configured to run hosted CI.
+Run all local low-load synthetic regressions with `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v` (73 tests passed in an isolated source-only workspace on 14 October 2026, including eight native-checkpoint discovery and documentation regressions; the model-cache and real-Flask suites also passed **independently**). These cover pure input validation, mock CLI behavior, generation admission, bounded HTTP audio reads and oversize 503 responses, fake FFmpeg timeouts and reference-cache cleanup, source contracts, **real Flask test-client authentication**, and AST-extracted cache-load/eviction recovery. The Flask integration suite skips when Flask is not already installed; no package installation is needed for the other tests. No actual FFmpeg binary, real model loading/inference, working Docker build, reverse proxy or synthesized audio was validated. No GitHub Actions workflows exist in this repository and this project is not configured to run hosted CI.
 
 The optional CLI launcher is `python f5_tts_app/cli.py --host 127.0.0.1 --port 9090`; it launches the same API server and therefore still needs all models and dependencies installed.
 
