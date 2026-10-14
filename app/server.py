@@ -1,10 +1,12 @@
 import os
 import io
+import select
+import socket
 import threading
 import base64
 import logging
 from flask import Flask, request, send_file, jsonify, Response
-from gevent.pywsgi import WSGIServer
+from gevent.pywsgi import WSGIServer, WSGIHandler
 from dotenv import load_dotenv
 from argparse import ArgumentParser
 
@@ -235,6 +237,29 @@ STREAM_SAMPLE_RATE = 16000
 MIN_SPEED, MAX_SPEED = 0.25, 4.0
 
 
+class _SocketExposingHandler(WSGIHandler):
+    """gevent handler that exposes the client socket as environ['gevent.socket']."""
+
+    def get_environ(self):
+        env = super().get_environ()
+        env['gevent.socket'] = self.socket
+        return env
+
+
+def _client_disconnected(environ):
+    """True if the client has closed its end. Never blocks; False if undeterminable."""
+    sock = environ.get('gevent.socket')
+    if sock is None:
+        return False
+    try:
+        readable, _, _ = select.select([sock], [], [], 0)
+        if not readable:
+            return False
+        return sock.recv(1, socket.MSG_PEEK) == b''  # EOF; bytes would mean a pipelined request
+    except (OSError, ValueError):
+        return True
+
+
 @app.route('/v1/audio/speech/stream', methods=['POST'])
 @require_api_key
 def text_to_speech_stream():
@@ -281,12 +306,21 @@ def text_to_speech_stream():
         logging.error(f"Stream failed before first audio chunk: {e}")
         return jsonify({"error": "Failed to generate speech"}), 500
 
+    environ = request.environ
+
     def body():
         try:
             if first is not None:
                 yield first
-            for chunk in chunks:
+            # Check the socket *before* each sentence: a write to a closed peer only
+            # fails on the 2nd attempt, which would waste a whole extra sentence of GPU.
+            while not _client_disconnected(environ):
+                chunk = next(chunks, None)
+                if chunk is None:
+                    break
                 yield chunk
+            else:
+                logging.info("Client disconnected - stopping stream.")
         except Exception as e:  # headers already sent: truncate cleanly, keep earlier audio
             logging.error(f"Stream aborted mid-response: {e}")
         finally:
@@ -372,7 +406,7 @@ def get_loaded_models():
 if __name__ == '__main__':
     logging.info(f"F5-TTS API running on http://localhost:{PORT}")
     # Start the server using Gevent WSGI server for better concurrency support
-    http_server = WSGIServer(('0.0.0.0', PORT), app)
+    http_server = WSGIServer(('0.0.0.0', PORT), app, handler_class=_SocketExposingHandler)
     try:
         http_server.serve_forever()
     except KeyboardInterrupt:

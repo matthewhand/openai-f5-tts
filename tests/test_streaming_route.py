@@ -137,8 +137,38 @@ def test_closing_connection_stops_synthesis(client):
     assert ev == ["synth:0", "closed"], ev
 
 
+def test_hangup_is_detected_before_next_sentence_even_without_a_failed_write(client):
+    """TCP accepts the first write after the peer's FIN, so waiting for a write error
+    wastes a whole extra sentence of GPU time. The route must peek at the client
+    socket (exposed by the gevent handler as environ['gevent.socket']) before each
+    sentence instead."""
+    import socket
+    server_side, client_side = socket.socketpair()
+    try:
+        r = client.post(URL, json={"input": "One. Two. Three. Four."}, headers=AUTH,
+                        buffered=False, environ_overrides={"gevent.socket": server_side})
+        it = iter(r.response)
+        assert len(next(it)) == 320
+        client_side.close()  # barge-in: client goes away while sentence 2 would be next
+        assert list(it) == [], "kept synthesising after the client hung up"
+        assert FakeTTS.instance.events == ["synth:0", "closed"]
+    finally:
+        server_side.close()
+
+
+def test_open_connection_keeps_streaming(client):
+    import socket
+    server_side, client_side = socket.socketpair()
+    try:
+        r = client.post(URL, json={"input": "One. Two. Three."}, headers=AUTH,
+                        buffered=False, environ_overrides={"gevent.socket": server_side})
+        assert [len(c) for c in r.response] == [320, 320, 320]
+    finally:
+        server_side.close()
+        client_side.close()
+
+
 def test_midstream_failure_does_not_crash_and_keeps_earlier_audio(client):
-    client.application  # ensure imported
     FakeTTS.instance.fail_on_sentence = 1
     r = client.post(URL, json={"input": "One. Two. Three."}, headers=AUTH)
     assert r.status_code == 200
