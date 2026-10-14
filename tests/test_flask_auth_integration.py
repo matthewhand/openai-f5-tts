@@ -199,5 +199,53 @@ class RealFlaskAuthTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
 
 
+    def _import_with_bind(self, host):
+        """Import the actual server with fake model/gevent and auth disabled."""
+        created = []
+        class StartupSpy:
+            def __init__(self, **kwargs):
+                created.append("constructed")
+                self.loaded_models = {}
+            def list_available_models(self):
+                return []
+        fake_tts = types.ModuleType("tts_handler")
+        fake_tts.TTSHandler = StartupSpy
+        fake_gevent = types.ModuleType("gevent")
+        fake_gevent.__path__ = []
+        fake_pywsgi = types.ModuleType("gevent.pywsgi")
+        fake_pywsgi.WSGIServer = object
+        fake_alignment = types.ModuleType("alignment")
+        fake_alignment.build_alignment = lambda *args: (None, [], "unavailable")
+        with mock.patch.dict(os.environ, {"HOST": host, "REQUIRE_API_KEY": "False"}), \
+             mock.patch.object(self.utils, "REQUIRE_API_KEY", False), \
+             mock.patch.dict(sys.modules, {
+                 "gevent": fake_gevent, "gevent.pywsgi": fake_pywsgi,
+                 "tts_handler": fake_tts, "alignment": fake_alignment,
+                 "utils": self.utils,
+             }), \
+             mock.patch.object(sys, "argv", ["f5-fake-server"]):
+            try:
+                server = import_source("f5_unauth_bind_probe", APP / "server.py")
+            except ValueError:
+                self.assertEqual(created, [], "Unsafe bind reached model initialization")
+                raise
+        return server, created
+
+    def test_unauthenticated_wildcard_and_lan_rejected_before_model_startup(self):
+        for host in ("0.0.0.0", "::", "192.168.1.25", "localhost"):
+            with self.subTest(host=host), self.assertRaisesRegex(ValueError, "loopback"):
+                self._import_with_bind(host)
+
+    def test_unauthenticated_loopback_import_and_real_flask_route(self):
+        server, created = self._import_with_bind("127.0.0.1")
+        self.assertEqual(created, ["constructed"])
+        # The fixture temporarily patches an already imported utils module.
+        # Keep that synthetic auth state active across the client request.
+        with mock.patch.object(self.utils, "REQUIRE_API_KEY", False):
+            response = server.app.test_client().get("/v1/models")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"models": []})
+
+
 if __name__ == "__main__":
     unittest.main()
