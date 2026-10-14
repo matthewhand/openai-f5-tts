@@ -21,6 +21,11 @@ from f5_tts.infer.utils_infer import (
 )
 from utils import AUDIO_FORMAT_MIME_TYPES
 from generation_gate import GenerationGate
+from reference_paths import (
+    INPUT_EXTENSIONS, UntrustedReferencePath, validate_reference_voice,
+    validate_reference_root, validate_reference_input, validate_reference_cache,
+    require_missing_cache_intermediate,
+)
 from checkpoint_paths import (
     UntrustedCheckpointPath, validate_checkpoint_root, validate_checkpoint_path,
     CHECKPOINT_NAMES,
@@ -243,11 +248,13 @@ class TTSHandler:
         Raises:
             FileNotFoundError: If no matching reference audio file is found.
         """
-        supported_extensions = ['.wav', '.mp3', '.flac', '.aac', '.ogg', '.pcm']
-        for ext in supported_extensions:
+        validate_reference_voice(voice_name)
+        validate_reference_root(self.REF_AUDIO_DIR)
+        for ext in INPUT_EXTENSIONS:
             ref_audio_path = os.path.join(self.REF_AUDIO_DIR, f"{voice_name}{ext}")
-            if os.path.exists(ref_audio_path):
-                logging.info(f"Found reference audio for '{voice_name}': {ref_audio_path}")
+            if os.path.lexists(ref_audio_path):
+                validate_reference_input(self.REF_AUDIO_DIR, voice_name, ref_audio_path)
+                logging.info("Found reference audio for voice %r", voice_name)
                 return ref_audio_path
         raise FileNotFoundError(f"No reference audio file found for voice '{voice_name}' in {self.REF_AUDIO_DIR}")
 
@@ -261,20 +268,32 @@ class TTSHandler:
         Returns:
             str: Path to the processed audio file in the cache.
         """
+        validate_reference_voice(voice_name)
         try:
             ref_audio_path = self.get_ref_audio_path(voice_name)
         except FileNotFoundError as e:
             logging.error(e)
             raise
-
-        logging.info(f"Processing reference audio for voice '{voice_name}': {ref_audio_path}")
+        # Recheck even if the first lookup happened before an external rename.
+        validate_reference_input(self.REF_AUDIO_DIR, voice_name, ref_audio_path)
+        validate_reference_root(self.REF_AUDIO_CACHE_DIR)
+        logging.info("Processing reference audio for voice %r", voice_name)
 
         cached_audio_path = os.path.join(self.REF_AUDIO_CACHE_DIR, f"{voice_name}_processed.wav")
+        temp_pcm_path = os.path.join(self.REF_AUDIO_CACHE_DIR, f"{voice_name}_processed.pcm")
+        validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name, cached_audio_path,
+                                 "wav", allow_missing=True)
 
-        if not os.path.exists(cached_audio_path):
-            logging.info(f"Processing and caching reference audio to: {cached_audio_path}")
-            temp_pcm_path = os.path.join(self.REF_AUDIO_CACHE_DIR, f"{voice_name}_processed.pcm")
+        if not os.path.lexists(cached_audio_path):
+            # Never clobber or remove a leftover/foreign intermediate PCM file.
+            require_missing_cache_intermediate(
+                self.REF_AUDIO_CACHE_DIR, voice_name, temp_pcm_path
+            )
+            logging.info("Processing reference audio for voice %r into cache", voice_name)
             try:
+                validate_reference_input(self.REF_AUDIO_DIR, voice_name, ref_audio_path)
+                validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                         cached_audio_path, "wav", allow_missing=True)
                 # Use FFmpeg to trim, resample to 16kHz, convert to mono
                 subprocess.run([
                     "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-nostats",
@@ -286,9 +305,17 @@ class TTSHandler:
                     cached_audio_path
                 ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     timeout=self.FFMPEG_TIMEOUT_SECONDS)
+                validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                         cached_audio_path, "wav")
                 logging.info("Audio trimming and resampling completed and cached.")
 
                 if not self.disable_pcm_normalization:
+                    # Reject unexpected intermediate substitution before writing.
+                    require_missing_cache_intermediate(
+                        self.REF_AUDIO_CACHE_DIR, voice_name, temp_pcm_path
+                    )
+                    validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                             cached_audio_path, "wav")
                     # Convert to raw PCM and back to WAV to normalize
                     subprocess.run([
                         "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-nostats",
@@ -299,6 +326,10 @@ class TTSHandler:
                         temp_pcm_path
                     ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     timeout=self.FFMPEG_TIMEOUT_SECONDS)
+                    validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                             temp_pcm_path, "pcm")
+                    validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                             cached_audio_path, "wav")
                     logging.info("Audio converted to PCM.")
 
                     subprocess.run([
@@ -311,6 +342,8 @@ class TTSHandler:
                         cached_audio_path
                     ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     timeout=self.FFMPEG_TIMEOUT_SECONDS)
+                    validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                             cached_audio_path, "wav")
                     logging.info("Audio converted back from PCM.")
 
             except Exception as exc:
@@ -331,7 +364,9 @@ class TTSHandler:
                 except OSError:
                     logging.warning("Could not remove intermediate reference PCM")
 
-        # Verify the processed audio
+        # Reject a substituted cache file before decoding or resampling.
+        validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                 cached_audio_path, "wav")
         try:
             audio_input, sample_rate = sf.read(cached_audio_path)
             logging.debug(f"Processed audio loaded: {cached_audio_path} with sample rate {sample_rate}")
@@ -339,6 +374,8 @@ class TTSHandler:
             # Ensure sample rate matches 16kHz
             if sample_rate != 16000:
                 audio_input = librosa.resample(audio_input, orig_sr=sample_rate, target_sr=16000)
+                validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                         cached_audio_path, "wav")
                 sf.write(cached_audio_path, audio_input, 16000)
                 logging.info("Audio resampled to 16000 Hz.")
         except Exception as e:
@@ -365,7 +402,9 @@ class TTSHandler:
         logging.info(f"Transcribing reference audio for voice '{voice_name}'...")
         processed_audio_path = self.process_reference_audio(voice_name)
 
-        # Read the processed audio
+        # Revalidate after processing, before Whisper reads the pathname.
+        validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                 processed_audio_path, "wav")
         audio_input, sample_rate = sf.read(processed_audio_path)
         logging.debug(f"Processed audio loaded: {processed_audio_path} with sample rate {sample_rate}")
 
