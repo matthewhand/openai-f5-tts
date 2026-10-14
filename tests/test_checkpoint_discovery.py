@@ -10,6 +10,13 @@ from pathlib import Path
 import tempfile
 import types
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+from checkpoint_paths import (
+    UntrustedCheckpointPath, validate_checkpoint_root, validate_checkpoint_path,
+    CHECKPOINT_NAMES,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,7 +32,10 @@ def discover_from_source(handler):
     method.decorator_list = []
     code = compile(ast.fix_missing_locations(ast.Module(
         body=[method], type_ignores=[])), str(HANDLER_FILE), "exec")
-    scope = {"os": os, "logging": logging}
+    scope = {"os": os, "logging": logging, "validate_checkpoint_root": validate_checkpoint_root,
+             "validate_checkpoint_path": validate_checkpoint_path,
+             "UntrustedCheckpointPath": UntrustedCheckpointPath,
+             "CHECKPOINT_NAMES": CHECKPOINT_NAMES}
     exec(code, scope)
     return scope["discover_models"](handler)
 
