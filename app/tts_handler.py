@@ -21,6 +21,10 @@ from f5_tts.infer.utils_infer import (
 )
 from utils import AUDIO_FORMAT_MIME_TYPES
 from generation_gate import GenerationGate
+from checkpoint_paths import (
+    UntrustedCheckpointPath, validate_checkpoint_root, validate_checkpoint_path,
+    CHECKPOINT_NAMES,
+)
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -102,27 +106,23 @@ class TTSHandler:
         logging.info("Discovering available models...")
         self.available_models = {}
 
-        # Never hand pickle-based .pt files to the upstream model loader. Only
-        # discover native safetensors produced by a trusted, offline source.
-        # Prefer the newer checkpoint; a legacy .pt cannot shadow a safe one.
-        candidate_names = ("model_1250000.safetensors", "model_1200000.safetensors")
+        # Fail closed before walking a symlinked checkpoint root.
+        validate_checkpoint_root(self.CKPTS_DIR)
         for folder in os.listdir(self.CKPTS_DIR):
-            voice_dir = os.path.join(self.CKPTS_DIR, folder)
-            if not os.path.isdir(voice_dir):
-                continue
-            model_path = next(
-                (path for name in candidate_names
-                 if os.path.isfile(path := os.path.join(voice_dir, name))),
-                None,
-            )
+            model_path = None
+            for name in CHECKPOINT_NAMES:
+                path = os.path.join(self.CKPTS_DIR, folder, name)
+                try:
+                    validate_checkpoint_path(self.CKPTS_DIR, folder, path)
+                except UntrustedCheckpointPath:
+                    continue
+                model_path = path
+                break
             if model_path is not None:
                 self.available_models[folder] = model_path
                 logging.info("Discovered model for voice: %s", folder)
             else:
-                logging.warning(
-                    "No native safetensors checkpoint for voice %r; "
-                    "legacy .pt checkpoints are not loaded automatically", folder
-                )
+                logging.warning("No eligible native safetensors checkpoint for voice %r", folder)
 
     def load_voice_model(self, voice_name):
         """
@@ -143,6 +143,12 @@ class TTSHandler:
         if voice_name not in self.available_models:
             raise ValueError(f"Voice '{voice_name}' is not available.")
 
+        # Revalidate the remembered path before evicting any healthy model.
+        # Pathname checks cannot pin the inode during upstream load_model().
+        model_path = validate_checkpoint_path(
+            self.CKPTS_DIR, voice_name, self.available_models[voice_name]
+        )
+
         # Enforce the model load limit
         if len(self.loaded_models) >= self.MODEL_LOAD_LIMIT:
             # Unload the least recently used (LRU) model
@@ -155,8 +161,8 @@ class TTSHandler:
             if self.device.type == "cuda":
                 torch.cuda.empty_cache()
 
-        # Load the requested model
-        model_path = self.available_models[voice_name]
+        # Load the already checked pathname. The checkpoint tree must remain
+        # immutable under an untrusted actor while the upstream loader runs.
         # Never register an incomplete model after a failed load. Because the
         # old model was evicted before allocation to cap peak memory, it stays
         # unloaded; later requests may reload that voice from disk.
