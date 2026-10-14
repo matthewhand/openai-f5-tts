@@ -8,7 +8,8 @@ from dotenv import load_dotenv
 from argparse import ArgumentParser
 
 from tts_handler import TTSHandler
-from utils import require_api_key, AUDIO_FORMAT_MIME_TYPES
+from utils import require_api_key, AUDIO_FORMAT_MIME_TYPES, REQUIRE_API_KEY
+from auth_bind_policy import validate_auth_bind
 from alignment import build_alignment
 from request_validation import parse_speech_request, parse_timestamp_request, RequestValidationError
 from generation_gate import SynthesisBusyError
@@ -49,6 +50,10 @@ parser.add_argument(
     help="Host interface to bind (default: 0.0.0.0 for Docker)."
 )
 args = parser.parse_args()
+# Reject unsafe unauthenticated binds *before* expensive model initialization.
+# The container's loopback-published host port is not sufficient when its own
+# process listens on 0.0.0.0 and REQUIRE_API_KEY is explicitly disabled.
+validate_auth_bind(args.host, REQUIRE_API_KEY)
 
 # Load configuration from environment variables with defaults
 API_KEY = os.getenv('API_KEY', 'your_api_key_here')
