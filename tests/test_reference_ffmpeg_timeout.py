@@ -7,6 +7,13 @@ import subprocess
 import tempfile
 import types
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
+from reference_paths import (
+    validate_reference_voice, validate_reference_root, validate_reference_input,
+    validate_reference_cache, require_missing_cache_intermediate,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +59,11 @@ class ReferenceTimeoutTests(unittest.TestCase):
         ))
         namespace = {
             "os": os, "logging": logging,
+            "validate_reference_voice": validate_reference_voice,
+            "validate_reference_root": validate_reference_root,
+            "validate_reference_input": validate_reference_input,
+            "validate_reference_cache": validate_reference_cache,
+            "require_missing_cache_intermediate": require_missing_cache_intermediate,
             "subprocess": types.SimpleNamespace(run=fake_run, PIPE=subprocess.PIPE),
             "sf": types.SimpleNamespace(read=fake_read),
             "librosa": types.SimpleNamespace(resample=lambda data, **kwargs: data),
@@ -61,6 +73,7 @@ class ReferenceTimeoutTests(unittest.TestCase):
         self.handler = types.SimpleNamespace(
             get_ref_audio_path=lambda name: str(self.ref),
             REF_AUDIO_CACHE_DIR=str(self.root),
+            REF_AUDIO_DIR=str(self.root),
             REF_AUDIO_LIMIT_SECONDS=20,
             FFMPEG_TIMEOUT_SECONDS=5,
             disable_pcm_normalization=False,
