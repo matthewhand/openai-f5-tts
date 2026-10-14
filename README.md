@@ -36,6 +36,10 @@
 - The Python wrapper is MIT-licensed. **Upstream pretrained F5-TTS model weights are CC-BY-NC** per [SWivid/F5-TTS licensing](https://github.com/SWivid/F5-TTS#license); this repository's MIT license does not grant commercial rights to those weights. Check any reference-audio and voice rights separately.
 
 
+### Reference-audio trust review (source-level gap)
+
+- The current reference-audio lookup accepts filesystem paths using `os.path.exists`, which follows symlinks. Predictable cached WAV/PCM paths can also be pre-created as symlinks or hardlinks before FFmpeg runs with `-y`. Until corrected, do **not** grant untrusted users write access to `ref_audio/`, `ref_audio_cache/`, or any of their parent directories. The planned correction will reject unsafe path metadata before reads and writes, but will **not** eliminate concurrent path replacement between a check and FFmpeg/Whisper opening a pathname, prove audio-file content or consent, or sandbox FFmpeg. No live FFmpeg, Whisper or model execution is authorized for this cycle.
+
 ### Bounded output buffering and FFmpeg safeguards
 
 - `MAX_AUDIO_OUTPUT_BYTES` (positive integer, default **16777216 = 16 MiB**) bounds each file read by **limit + 1 byte** in both `/v1/audio/speech` and the timestamped base64 route. Oversized generated output returns HTTP **503** with `Generated audio exceeds configured output limit`; the request-owned output file is removed. The size check happens **after** synthesis and encoding, so it does not prevent large intermediate audio allocations or disk writes. Even an accepted timestamped response expands during base64 encoding and JSON serialization; aggregate request memory is not independently bounded.
