@@ -10,7 +10,6 @@ import subprocess
 import gc  # Import garbage collection
 from collections import OrderedDict
 from gevent.lock import Semaphore
-from safetensors.torch import save_file, load_file
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 from f5_tts.model import DiT
 from f5_tts.infer.utils_infer import (
@@ -95,34 +94,6 @@ class TTSHandler:
         model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v3-turbo").to(self.device)
         return processor, model
 
-    def convert_pt_to_safetensors(self, pt_path, safetensors_path):
-        """Converts a .pt file to .safetensors format, handling `ema_model_state_dict`."""
-        logging.info(f"Converting .pt file to .safetensors: {pt_path} -> {safetensors_path}")
-        checkpoint = torch.load(pt_path, map_location="cpu")
-
-        # Extract the `ema_model_state_dict` if it exists, otherwise use `state_dict`
-        if "ema_model_state_dict" in checkpoint:
-            state_dict = checkpoint["ema_model_state_dict"]
-            logging.info("Found 'ema_model_state_dict' in checkpoint.")
-        elif "state_dict" in checkpoint:
-            state_dict = checkpoint["state_dict"]
-            logging.info("Found 'state_dict' in checkpoint.")
-        else:
-            raise KeyError(f"The checkpoint does not contain 'ema_model_state_dict' or 'state_dict'. Keys: {checkpoint.keys()}")
-
-        # Ensure all values in state_dict are tensors
-        validated_state_dict = {}
-        for key, value in state_dict.items():
-            if not isinstance(value, torch.Tensor):
-                logging.warning(f"Skipping key {key}: not a tensor (found {type(value)}).")
-                continue
-            validated_state_dict[key] = value
-
-        # Save the validated tensors to .safetensors
-        save_file(validated_state_dict, safetensors_path)
-        logging.info(f".safetensors file successfully saved at {safetensors_path}")
-
-
     def discover_models(self):
         """
         Discover all available models in the ckpts/ directory.
@@ -131,24 +102,27 @@ class TTSHandler:
         logging.info("Discovering available models...")
         self.available_models = {}
 
+        # Never hand pickle-based .pt files to the upstream model loader. Only
+        # discover native safetensors produced by a trusted, offline source.
+        # Prefer the newer checkpoint; a legacy .pt cannot shadow a safe one.
+        candidate_names = ("model_1250000.safetensors", "model_1200000.safetensors")
         for folder in os.listdir(self.CKPTS_DIR):
             voice_dir = os.path.join(self.CKPTS_DIR, folder)
-            if os.path.isdir(voice_dir):
-                model_path = os.path.join(voice_dir, "model_1250000.safetensors")
-                if not os.path.exists(model_path):
-                    model_path = os.path.join(voice_dir, "model_1250000.pt")
-                    if not os.path.exists(model_path):
-                        model_path = os.path.join(voice_dir, "model_1200000.safetensors")
-                        if not os.path.exists(model_path):
-                            model_path = os.path.join(voice_dir, "model_1200000.pt")
-                
-                logging.debug(f"Checking for model file for voice {folder}: {model_path}, exists: {os.path.exists(model_path)}")
-                if os.path.exists(model_path):
-                    self.available_models[folder] = model_path
-                    logging.info(f"Discovered model for voice: {folder}")
-                else:
-                    available_files = os.listdir(voice_dir)
-                    logging.warning(f"No valid checkpoint found for voice: {folder}. Files present: {available_files}")
+            if not os.path.isdir(voice_dir):
+                continue
+            model_path = next(
+                (path for name in candidate_names
+                 if os.path.isfile(path := os.path.join(voice_dir, name))),
+                None,
+            )
+            if model_path is not None:
+                self.available_models[folder] = model_path
+                logging.info("Discovered model for voice: %s", folder)
+            else:
+                logging.warning(
+                    "No native safetensors checkpoint for voice %r; "
+                    "legacy .pt checkpoints are not loaded automatically", folder
+                )
 
     def load_voice_model(self, voice_name):
         """
