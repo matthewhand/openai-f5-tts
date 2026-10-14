@@ -11,7 +11,6 @@ import gc  # Import garbage collection
 from collections import OrderedDict
 from safetensors.torch import save_file, load_file
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
-import nltk
 from f5_tts.model import DiT
 from f5_tts.infer.utils_infer import (
     load_vocoder,
@@ -21,11 +20,7 @@ from f5_tts.infer.utils_infer import (
     remove_silence_for_generated_wav
 )
 from utils import AUDIO_FORMAT_MIME_TYPES
-
-try:
-    nltk.data.find('tokenizers/punkt_tab')
-except LookupError:
-    nltk.download('punkt_tab', quiet=True)
+from sentences import split_sentences
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -501,7 +496,7 @@ class TTSHandler:
         ref_text = self.transcribe_audio(voice)
         ref_audio_path = self.process_reference_audio(voice)
 
-        sentences = nltk.sent_tokenize(text)
+        sentences = split_sentences(text)
         logging.info(f"Streaming {len(sentences)} sentence(s) for voice '{voice}'.")
 
         try:

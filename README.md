@@ -298,7 +298,7 @@ curl -X POST http://localhost:9090/v1/audio/speech \
 
 Streams speech as raw **int16 PCM at 16 kHz** using chunked transfer encoding. Designed for real-time voice agent pipelines (e.g. Hugging Face speech-to-speech).
 
-The input text is split into sentences using an NLTK tokenizer. Each sentence is synthesised by F5-TTS and flushed to the client immediately, so playback can begin before the full response is ready. Dropping the HTTP connection mid-stream stops further synthesis — useful for barge-in handling.
+The input text is split into sentences by a small built-in splitter (no NLTK and no runtime downloads; it handles abbreviations like "Dr." and Chinese punctuation). Each sentence is synthesised by F5-TTS and flushed to the client immediately, so playback can begin before the full response is ready. Dropping the HTTP connection mid-stream stops further synthesis — useful for barge-in handling.
 
 - **Method**: `POST`
 - **Headers**: `Authorization: Bearer <API_KEY>`
@@ -307,7 +307,7 @@ The input text is split into sentences using an NLTK tokenizer. Each sentence is
   - `voice` (string, optional): Voice model to use (default: `Emilia`).
   - `speed` (float, optional): Speed factor (default: `1.0`).
 - **Response**:
-  - `Content-Type: audio/L16`
+  - `Content-Type: audio/L16; rate=16000; channels=1`
   - `X-Sample-Rate: 16000`
   - `X-Audio-Channels: 1`
   - `X-Audio-Encoding: int16`
@@ -356,10 +356,10 @@ Lists all supported voices, regardless of language.
 
 ## Streaming Test Client
 
-`test_stream_client.py` in the project root hits the streaming endpoint and writes the received PCM to a WAV file for verification.
+`scripts/stream_client.py` (standard library only) hits the streaming endpoint and writes the received PCM to a WAV file for verification.
 
 ```bash
-python test_stream_client.py \
+python scripts/stream_client.py \
   --text "Hello. The quick brown fox jumps over the lazy dog. Streaming works." \
   --voice Emilia \
   --output stream_test.wav

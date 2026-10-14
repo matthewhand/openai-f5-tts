@@ -3,7 +3,7 @@ import io
 import threading
 import base64
 import logging
-from flask import Flask, request, send_file, jsonify, Response, stream_with_context
+from flask import Flask, request, send_file, jsonify, Response
 from gevent.pywsgi import WSGIServer
 from dotenv import load_dotenv
 from argparse import ArgumentParser
@@ -231,53 +231,78 @@ def text_to_speech_with_timestamps(voice_id):
         return jsonify({"error": "Failed to generate speech"}), 500
 
 
+STREAM_SAMPLE_RATE = 16000
+MIN_SPEED, MAX_SPEED = 0.25, 4.0
+
+
 @app.route('/v1/audio/speech/stream', methods=['POST'])
 @require_api_key
 def text_to_speech_stream():
     """
-    Stream speech as raw int16 PCM at 16 kHz using chunked transfer encoding.
+    Stream speech as raw int16 PCM (16 kHz, mono) using chunked transfer encoding.
     Text is split into sentences; each sentence is synthesised and flushed as it
-    completes. Dropping the connection mid-stream stops further synthesis.
+    completes. Dropping the connection stops further synthesis (barge-in).
 
     Request body (JSON):
-      - input: Text to synthesise.
+      - input: Text to synthesise (non-empty string).
       - voice: (Optional) Voice name. Defaults to DEFAULT_VOICE.
-      - speed: (Optional) Speed factor. Defaults to DEFAULT_SPEED.
+      - speed: (Optional) Speed factor, 0.25-4.0. Defaults to DEFAULT_SPEED.
 
-    Response:
-      Content-Type: audio/L16
-      X-Sample-Rate: 16000
-      X-Audio-Channels: 1
-      X-Audio-Encoding: int16
+    Request problems are reported as 4xx *before* any audio is sent. The first
+    sentence is synthesised before headers are written so that model/reference
+    failures also surface as a proper status code instead of an empty 200.
     """
-    data = request.json
-    if not data or 'input' not in data:
-        return jsonify({"error": "Missing 'input' in request body"}), 400
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
 
     text = data.get('input')
-    voice = data.get('voice') or DEFAULT_VOICE
-    speed = float(data.get('speed', DEFAULT_SPEED))
+    if not isinstance(text, str) or not text.strip():
+        return jsonify({"error": "'input' must be a non-empty string"}), 400
 
-    def generate():
+    voice = data.get('voice') or DEFAULT_VOICE
+    try:
+        speed = float(data.get('speed', DEFAULT_SPEED))
+    except (TypeError, ValueError):
+        return jsonify({"error": "'speed' must be a number"}), 400
+    if not (MIN_SPEED <= speed <= MAX_SPEED):  # also rejects NaN
+        return jsonify({"error": f"'speed' must be between {MIN_SPEED} and {MAX_SPEED}"}), 400
+
+    if voice not in tts_handler.available_models:
+        return jsonify({"error": f"Voice '{voice}' is not available."}), 400
+
+    chunks = tts_handler.generate_speech_stream(text, voice, speed)
+    try:
+        first = next(chunks, None)
+    except ValueError as e:
+        logging.error(f"Stream ValueError: {e}")
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logging.error(f"Stream failed before first audio chunk: {e}")
+        return jsonify({"error": "Failed to generate speech"}), 500
+
+    def body():
         try:
-            for chunk in tts_handler.generate_speech_stream(text, voice, speed):
+            if first is not None:
+                yield first
+            for chunk in chunks:
                 yield chunk
-        except ValueError as e:
-            logging.error(f"Stream ValueError: {e}")
-        except RuntimeError as e:
-            logging.error(f"Stream RuntimeError: {e}")
-        except Exception as e:
-            logging.error(f"Unhandled stream exception: {e}")
+        except Exception as e:  # headers already sent: truncate cleanly, keep earlier audio
+            logging.error(f"Stream aborted mid-response: {e}")
+        finally:
+            chunks.close()  # client hung up or finished: stop any further GPU work
 
     headers = {
-        'X-Sample-Rate': '16000',
+        'X-Sample-Rate': str(STREAM_SAMPLE_RATE),
         'X-Audio-Channels': '1',
         'X-Audio-Encoding': 'int16',
+        'Cache-Control': 'no-store',
+        'X-Accel-Buffering': 'no',  # stop nginx buffering the chunked response
     }
     return Response(
-        stream_with_context(generate()),
-        mimetype='audio/L16',
-        headers=headers
+        body(),
+        content_type=f'audio/L16; rate={STREAM_SAMPLE_RATE}; channels=1',
+        headers=headers,
     )
 
 

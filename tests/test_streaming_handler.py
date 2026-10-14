@@ -36,6 +36,7 @@ def th(monkeypatch, tmp_path):
     h.loaded_models = OrderedDict()
     h.vocoder = object()
     h.disable_pcm_normalization = True
+    h._ref_text_cache = {}  # normally created in __init__, which we bypass (no model loading)
 
     calls = SimpleNamespace(load=0, process=0, whisper=0, infer=[], amp=0.5)
     h._calls = calls
