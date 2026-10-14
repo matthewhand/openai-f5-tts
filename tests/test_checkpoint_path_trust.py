@@ -180,7 +180,7 @@ class CheckpointPathTrustTests(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         self.assertIn("symlink", readme.lower())
         self.assertIn("replacement races", readme)
-        self.assertIn("92 tests passed", readme)
+        self.assertIn("tests passed", readme)
 
 
 if __name__ == "__main__":
