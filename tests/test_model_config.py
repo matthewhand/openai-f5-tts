@@ -59,9 +59,9 @@ def test_handler_passes_per_voice_config_to_f5(monkeypatch, tmp_path):
     h.F5TTS_MODEL_CONFIG = dict(V1_BASE)
     h.MODEL_LOAD_LIMIT = 2
     h.loaded_models = OrderedDict()
-    h.available_models = {"Emilia": "x/model_1250000.safetensors", "Scarlett": "x/model_1200000.safetensors"}
+    h.available_models = {"Emilia": "x/model_1250000.safetensors", "V0": "x/model_1200000.safetensors"}
     h.load_voice_model("Emilia")
-    h.load_voice_model("Scarlett")
+    h.load_voice_model("V0")
     assert seen["x/model_1250000.safetensors"] == V1_BASE
     assert seen["x/model_1200000.safetensors"]["text_mask_padding"] is False
     assert seen["x/model_1200000.safetensors"]["pe_attn_head"] == 1

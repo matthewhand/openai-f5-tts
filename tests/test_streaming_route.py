@@ -22,7 +22,7 @@ class FakeTTS:
     instance = None
 
     def __init__(self, *args, **kwargs):
-        self.available_models = {"Scarlett": "x", "Emilia": "y"}
+        self.available_models = {"V0": "x", "Emilia": "y"}
         self.loaded_models = {}
         self.events = []
         self.fail_on_sentence = None
@@ -32,7 +32,7 @@ class FakeTTS:
     def list_available_models(self):
         return [{"name": n, "status": "unloaded"} for n in self.available_models]
 
-    def generate_speech_stream(self, text, voice="Scarlett", speed=1.0):
+    def generate_speech_stream(self, text, voice="V0", speed=1.0):
         self.last_speed = speed
         sentences = [s.strip() for s in text.split(".") if s.strip()]
         try:

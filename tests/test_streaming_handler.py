@@ -32,7 +32,7 @@ def th(monkeypatch, tmp_path):
 
     h = mod.TTSHandler.__new__(mod.TTSHandler)
     h.device = torch.device("cpu")
-    h.available_models = {"Scarlett": "ignored"}
+    h.available_models = {"V0": "ignored"}
     h.loaded_models = OrderedDict()
     h.vocoder = object()
     h.disable_pcm_normalization = True
@@ -79,7 +79,7 @@ def th(monkeypatch, tmp_path):
 
 
 def stream(h, text, **kw):
-    return list(h.generate_speech_stream(text, "Scarlett", **kw))
+    return list(h.generate_speech_stream(text, "V0", **kw))
 
 
 def test_one_chunk_per_sentence(th):
@@ -125,7 +125,7 @@ def test_speed_is_forwarded_to_f5(th):
 
 
 def test_stopping_consumption_stops_inference(th):
-    g = th.generate_speech_stream("One a. Two b. Three c. Four d.", "Scarlett")
+    g = th.generate_speech_stream("One a. Two b. Three c. Four d.", "V0")
     next(g)
     g.close()  # what the server does when the client disconnects
     assert len(th._calls.infer) == 1
@@ -145,7 +145,7 @@ def test_sentence_splitting(th, text, expected):
 
 def test_empty_text_and_unknown_voice_raise_value_error(th):
     with pytest.raises(ValueError):
-        next(th.generate_speech_stream("", "Scarlett"))
+        next(th.generate_speech_stream("", "V0"))
     with pytest.raises(ValueError):
         next(th.generate_speech_stream("Hi.", "Nobody"))
 
