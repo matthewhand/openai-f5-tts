@@ -27,11 +27,14 @@ def th(monkeypatch, tmp_path):
         sys.modules.pop(name, None)
     mod = importlib.import_module("tts_handler")
 
-    ref_wav = tmp_path / "ref.wav"
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    ref_wav = cache / "V0_processed.wav"
     sf.write(str(ref_wav), np.zeros(16000, dtype=np.float32), 16000)
 
     h = mod.TTSHandler.__new__(mod.TTSHandler)
     h.device = torch.device("cpu")
+    h.REF_AUDIO_CACHE_DIR = str(cache)
     h.available_models = {"V0": "ignored"}
     h.loaded_models = OrderedDict()
     h.vocoder = object()

@@ -34,9 +34,8 @@ RUN python3 -m pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY app/ ${WORKDIR}/
 
-# Download example reference audio
-RUN curl -L -o ${REF_AUDIO_DIR}/basic_ref_en.wav \
-    https://github.com/SWivid/F5-TTS/raw/refs/heads/main/src/f5_tts/infer/examples/basic/basic_ref_en.wav
+# Reference audio is provided by the operator's volume at runtime.
+# Never fetch unverified voice content implicitly during image builds.
 
 # Default command to run the server
 CMD ["python3", "/app/server.py"]

@@ -9,7 +9,7 @@ import torch
 import subprocess
 import gc  # Import garbage collection
 from collections import OrderedDict
-from safetensors.torch import save_file, load_file
+from gevent.lock import Semaphore
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 from f5_tts.model import DiT
 from f5_tts.infer.utils_infer import (
@@ -20,6 +20,16 @@ from f5_tts.infer.utils_infer import (
     remove_silence_for_generated_wav
 )
 from utils import AUDIO_FORMAT_MIME_TYPES
+from generation_gate import GenerationGate
+from reference_paths import (
+    INPUT_EXTENSIONS, UntrustedReferencePath, validate_reference_voice,
+    validate_reference_root, validate_reference_input, validate_reference_cache,
+    require_missing_cache_intermediate,
+)
+from checkpoint_paths import (
+    UntrustedCheckpointPath, validate_checkpoint_root, validate_checkpoint_path,
+    CHECKPOINT_NAMES,
+)
 from sentences import split_sentences
 from model_config import model_config_for
 
@@ -44,13 +54,22 @@ class TTSHandler:
         self.REF_AUDIO_DIR = "ref_audio/"  # Directory containing reference audio files
 
         self.MODEL_LOAD_LIMIT = int(os.getenv("MODEL_LOAD_LIMIT", "1"))
+        if self.MODEL_LOAD_LIMIT < 1:
+            raise ValueError('MODEL_LOAD_LIMIT must be at least 1')
         self.REF_AUDIO_LIMIT_SECONDS = int(os.getenv("REF_AUDIO_LIMIT_SECONDS", "20"))
+        self.FFMPEG_TIMEOUT_SECONDS = int(os.getenv("FFMPEG_TIMEOUT_SECONDS", "120"))
+        if self.FFMPEG_TIMEOUT_SECONDS < 1:
+            raise ValueError('FFMPEG_TIMEOUT_SECONDS must be at least 1')
         self.REF_AUDIO_CACHE_DIR = "ref_audio_cache"
         os.makedirs(self.REF_AUDIO_CACHE_DIR, exist_ok=True)
 
         self.retain_cache = retain_cache
         self.disable_pcm_normalization = disable_pcm_normalization
         self.default_voice = default_voice
+        # Gevent serves cooperative request handlers sharing this mutable model cache.
+        # Serialize model swaps and inference; overlapping GPU jobs are unsafe here.
+        self._inference_lock = Semaphore(1)
+        self._generation_gate = GenerationGate()
         self._ref_text_cache: dict = {}
 
         self.cleanup_cache()
@@ -87,34 +106,6 @@ class TTSHandler:
         model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-large-v3-turbo").to(self.device)
         return processor, model
 
-    def convert_pt_to_safetensors(self, pt_path, safetensors_path):
-        """Converts a .pt file to .safetensors format, handling `ema_model_state_dict`."""
-        logging.info(f"Converting .pt file to .safetensors: {pt_path} -> {safetensors_path}")
-        checkpoint = torch.load(pt_path, map_location="cpu")
-
-        # Extract the `ema_model_state_dict` if it exists, otherwise use `state_dict`
-        if "ema_model_state_dict" in checkpoint:
-            state_dict = checkpoint["ema_model_state_dict"]
-            logging.info("Found 'ema_model_state_dict' in checkpoint.")
-        elif "state_dict" in checkpoint:
-            state_dict = checkpoint["state_dict"]
-            logging.info("Found 'state_dict' in checkpoint.")
-        else:
-            raise KeyError(f"The checkpoint does not contain 'ema_model_state_dict' or 'state_dict'. Keys: {checkpoint.keys()}")
-
-        # Ensure all values in state_dict are tensors
-        validated_state_dict = {}
-        for key, value in state_dict.items():
-            if not isinstance(value, torch.Tensor):
-                logging.warning(f"Skipping key {key}: not a tensor (found {type(value)}).")
-                continue
-            validated_state_dict[key] = value
-
-        # Save the validated tensors to .safetensors
-        save_file(validated_state_dict, safetensors_path)
-        logging.info(f".safetensors file successfully saved at {safetensors_path}")
-
-
     def discover_models(self):
         """
         Discover all available models in the ckpts/ directory.
@@ -123,24 +114,25 @@ class TTSHandler:
         logging.info("Discovering available models...")
         self.available_models = {}
 
+        # Fail closed before walking a symlinked checkpoint root.
+        validate_checkpoint_root(self.CKPTS_DIR)
         for folder in os.listdir(self.CKPTS_DIR):
-            voice_dir = os.path.join(self.CKPTS_DIR, folder)
-            if os.path.isdir(voice_dir):
-                model_path = os.path.join(voice_dir, "model_1250000.safetensors")
-                if not os.path.exists(model_path):
-                    model_path = os.path.join(voice_dir, "model_1250000.pt")
-                    if not os.path.exists(model_path):
-                        model_path = os.path.join(voice_dir, "model_1200000.safetensors")
-                        if not os.path.exists(model_path):
-                            model_path = os.path.join(voice_dir, "model_1200000.pt")
-                
-                logging.debug(f"Checking for model file for voice {folder}: {model_path}, exists: {os.path.exists(model_path)}")
-                if os.path.exists(model_path):
-                    self.available_models[folder] = model_path
-                    logging.info(f"Discovered model for voice: {folder}")
-                else:
-                    available_files = os.listdir(voice_dir)
-                    logging.warning(f"No valid checkpoint found for voice: {folder}. Files present: {available_files}")
+            if os.path.isfile(os.path.join(self.CKPTS_DIR, folder)):
+                continue  # README.md, .gitkeep etc. are not voices
+            model_path = None
+            for name in CHECKPOINT_NAMES:
+                path = os.path.join(self.CKPTS_DIR, folder, name)
+                try:
+                    validate_checkpoint_path(self.CKPTS_DIR, folder, path)
+                except UntrustedCheckpointPath:
+                    continue
+                model_path = path
+                break
+            if model_path is not None:
+                self.available_models[folder] = model_path
+                logging.info("Discovered model for voice: %s", folder)
+            else:
+                logging.warning("No eligible native safetensors checkpoint for voice %r", folder)
 
     def load_voice_model(self, voice_name):
         """
@@ -161,16 +153,43 @@ class TTSHandler:
         if voice_name not in self.available_models:
             raise ValueError(f"Voice '{voice_name}' is not available.")
 
+        # Revalidate the remembered path before evicting any healthy model.
+        # Pathname checks cannot pin the inode during upstream load_model().
+        model_path = validate_checkpoint_path(
+            self.CKPTS_DIR, voice_name, self.available_models[voice_name]
+        )
+
         # Enforce the model load limit
         if len(self.loaded_models) >= self.MODEL_LOAD_LIMIT:
             # Unload the least recently used (LRU) model
-            lru_model_name, _ = self.loaded_models.popitem(last=False)
-            logging.info(f"Unloading model: {lru_model_name}")
-            self.unload_voice_model(lru_model_name)
+            lru_model_name, lru_model = self.loaded_models.popitem(last=False)
+            logging.info("Evicting model: %s", lru_model_name)
+            # The model was already removed from the LRU dictionary. Drop the
+            # last local reference *before* allocating the replacement model.
+            del lru_model
+            gc.collect()
+            if self.device.type == "cuda":
+                torch.cuda.empty_cache()
 
-        # Load the requested model
-        model_path = self.available_models[voice_name]
-        model = load_model(DiT, model_config_for(model_path), model_path)
+        # Load the already checked pathname. The checkpoint tree must remain
+        # immutable under an untrusted actor while the upstream loader runs.
+        # Never register an incomplete model after a failed load. Because the
+        # old model was evicted before allocation to cap peak memory, it stays
+        # unloaded; later requests may reload that voice from disk.
+        try:
+            model = load_model(DiT, model_config_for(model_path), model_path)
+            if model is None:
+                raise RuntimeError('Voice checkpoint loader returned no model')
+        except Exception:
+            # A failed allocation may leave collectable Python/GPU objects.
+            # Do not mask the original checkpoint failure if cleanup also fails.
+            try:
+                gc.collect()
+                if self.device.type == "cuda":
+                    torch.cuda.empty_cache()
+            except Exception:
+                logging.warning("Post-failure model allocator cleanup failed", exc_info=True)
+            raise
         self.loaded_models[voice_name] = model  # Add to loaded models (LRU order)
         logging.info(f"Loaded model for voice: {voice_name}")
         return model
@@ -234,11 +253,13 @@ class TTSHandler:
         Raises:
             FileNotFoundError: If no matching reference audio file is found.
         """
-        supported_extensions = ['.wav', '.mp3', '.flac', '.aac', '.ogg', '.pcm']
-        for ext in supported_extensions:
+        validate_reference_voice(voice_name)
+        validate_reference_root(self.REF_AUDIO_DIR)
+        for ext in INPUT_EXTENSIONS:
             ref_audio_path = os.path.join(self.REF_AUDIO_DIR, f"{voice_name}{ext}")
-            if os.path.exists(ref_audio_path):
-                logging.info(f"Found reference audio for '{voice_name}': {ref_audio_path}")
+            if os.path.lexists(ref_audio_path):
+                validate_reference_input(self.REF_AUDIO_DIR, voice_name, ref_audio_path)
+                logging.info("Found reference audio for voice %r", voice_name)
                 return ref_audio_path
         raise FileNotFoundError(f"No reference audio file found for voice '{voice_name}' in {self.REF_AUDIO_DIR}")
 
@@ -252,63 +273,105 @@ class TTSHandler:
         Returns:
             str: Path to the processed audio file in the cache.
         """
+        validate_reference_voice(voice_name)
         try:
             ref_audio_path = self.get_ref_audio_path(voice_name)
         except FileNotFoundError as e:
             logging.error(e)
             raise
+        # Recheck even if the first lookup happened before an external rename.
+        validate_reference_input(self.REF_AUDIO_DIR, voice_name, ref_audio_path)
+        validate_reference_root(self.REF_AUDIO_CACHE_DIR)
+        logging.info("Processing reference audio for voice %r", voice_name)
 
-        logging.info(f"Processing reference audio for voice '{voice_name}': {ref_audio_path}")
-
-        base_filename = os.path.basename(ref_audio_path)
         cached_audio_path = os.path.join(self.REF_AUDIO_CACHE_DIR, f"{voice_name}_processed.wav")
+        temp_pcm_path = os.path.join(self.REF_AUDIO_CACHE_DIR, f"{voice_name}_processed.pcm")
+        validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name, cached_audio_path,
+                                 "wav", allow_missing=True)
 
-        if not os.path.exists(cached_audio_path):
-            logging.info(f"Processing and caching reference audio to: {cached_audio_path}")
+        if not os.path.lexists(cached_audio_path):
+            # Never clobber or remove a leftover/foreign intermediate PCM file.
+            require_missing_cache_intermediate(
+                self.REF_AUDIO_CACHE_DIR, voice_name, temp_pcm_path
+            )
+            logging.info("Processing reference audio for voice %r into cache", voice_name)
             try:
+                validate_reference_input(self.REF_AUDIO_DIR, voice_name, ref_audio_path)
+                validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                         cached_audio_path, "wav", allow_missing=True)
                 # Use FFmpeg to trim, resample to 16kHz, convert to mono
                 subprocess.run([
-                    "ffmpeg",
+                    "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-nostats",
                     "-i", ref_audio_path,
                     "-t", str(self.REF_AUDIO_LIMIT_SECONDS),  # Trim to REF_AUDIO_LIMIT_SECONDS
                     "-ar", "16000",  # Resample to 16kHz
                     "-ac", "1",  # Convert to mono
                     "-y",  # Overwrite output files without asking
                     cached_audio_path
-                ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=self.FFMPEG_TIMEOUT_SECONDS)
+                validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                         cached_audio_path, "wav")
                 logging.info("Audio trimming and resampling completed and cached.")
 
                 if not self.disable_pcm_normalization:
+                    # Reject unexpected intermediate substitution before writing.
+                    require_missing_cache_intermediate(
+                        self.REF_AUDIO_CACHE_DIR, voice_name, temp_pcm_path
+                    )
+                    validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                             cached_audio_path, "wav")
                     # Convert to raw PCM and back to WAV to normalize
-                    temp_pcm_path = os.path.join(self.REF_AUDIO_CACHE_DIR, f"{voice_name}_processed.pcm")
                     subprocess.run([
-                        "ffmpeg",
+                        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-nostats",
                         "-y",
                         "-i", cached_audio_path,
                         "-f", "s16le",
                         "-acodec", "pcm_s16le",
                         temp_pcm_path
-                    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=self.FFMPEG_TIMEOUT_SECONDS)
+                    validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                             temp_pcm_path, "pcm")
+                    validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                             cached_audio_path, "wav")
                     logging.info("Audio converted to PCM.")
 
                     subprocess.run([
-                        "ffmpeg",
+                        "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-nostats",
                         "-y",
                         "-f", "s16le",
                         "-ar", "16000",
                         "-ac", "1",
                         "-i", temp_pcm_path,
                         cached_audio_path
-                    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=self.FFMPEG_TIMEOUT_SECONDS)
+                    validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                             cached_audio_path, "wav")
                     logging.info("Audio converted back from PCM.")
 
-                    # Clean up PCM file
+            except Exception as exc:
+                # Never reuse a partial or timed-out reference-audio conversion.
+                logging.warning("Reference audio conversion failed; discarding partial cache")
+                try:
+                    os.remove(cached_audio_path)
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    logging.warning("Could not remove incomplete reference cache")
+                raise RuntimeError("Failed to process reference audio with FFmpeg") from exc
+            finally:
+                try:
                     os.remove(temp_pcm_path)
-            except subprocess.CalledProcessError as e:
-                logging.error(f"FFmpeg error: {e.stderr.decode()}")
-                raise RuntimeError("Failed to process reference audio with FFmpeg.")
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    logging.warning("Could not remove intermediate reference PCM")
 
-        # Verify the processed audio
+        # Reject a substituted cache file before decoding or resampling.
+        validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                 cached_audio_path, "wav")
         try:
             audio_input, sample_rate = sf.read(cached_audio_path)
             logging.debug(f"Processed audio loaded: {cached_audio_path} with sample rate {sample_rate}")
@@ -316,11 +379,18 @@ class TTSHandler:
             # Ensure sample rate matches 16kHz
             if sample_rate != 16000:
                 audio_input = librosa.resample(audio_input, orig_sr=sample_rate, target_sr=16000)
+                validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                         cached_audio_path, "wav")
                 sf.write(cached_audio_path, audio_input, 16000)
                 logging.info("Audio resampled to 16000 Hz.")
         except Exception as e:
-            logging.error(f"Error verifying or resampling processed audio: {e}")
-            raise RuntimeError("Failed to verify or resample processed audio.")
+            # A failed cache validation must trigger a fresh conversion next time.
+            try:
+                os.remove(cached_audio_path)
+            except OSError:
+                pass
+            logging.error("Failed to verify processed reference audio")
+            raise RuntimeError("Failed to verify or resample processed audio") from e
 
         return cached_audio_path
 
@@ -335,13 +405,17 @@ class TTSHandler:
         Returns:
             str: Transcription text.
         """
-        if voice_name in self._ref_text_cache:
+        cached = getattr(self, "_ref_text_cache", None)
+        if cached is not None and voice_name in cached:
             logging.debug(f"Using cached transcription for voice '{voice_name}'.")
-            return self._ref_text_cache[voice_name]
+            return cached[voice_name]
 
         logging.info(f"Transcribing reference audio for voice '{voice_name}'...")
         processed_audio_path = self.process_reference_audio(voice_name)
 
+        # Revalidate after processing, before Whisper reads the pathname.
+        validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
+                                 processed_audio_path, "wav")
         audio_input, sample_rate = sf.read(processed_audio_path)
         logging.debug(f"Processed audio loaded: {processed_audio_path} with sample rate {sample_rate}")
 
@@ -351,7 +425,9 @@ class TTSHandler:
             generated_ids = self.whisper_model.generate(inputs)
 
         transcription = self.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        logging.debug(f"Transcription result: {transcription}")
+        logging.debug("Reference transcription produced %d characters", len(transcription))
+        if getattr(self, "_ref_text_cache", None) is None:
+            self._ref_text_cache = {}
         self._ref_text_cache[voice_name] = transcription
         return transcription
 
@@ -369,7 +445,7 @@ class TTSHandler:
             tuple: (sample_rate, audio_data)
         """
         try:
-            logging.debug(f"Generating speech for voice '{voice_name}': {gen_text}")
+            logging.debug("Generating speech for voice %r (%d text characters)", voice_name, len(gen_text))
             ref_text = self.transcribe_audio(voice_name)
 
             ref_audio_path = self.process_reference_audio(voice_name)
@@ -391,6 +467,13 @@ class TTSHandler:
             raise RuntimeError("Failed to generate speech.")
 
     def generate_speech(self, text, voice='Emilia', response_format='mp3', speed=1.0):
+        """Fail fast if a process-local synthesis request is already active."""
+        with self._generation_gate.claim():
+            return self._generate_speech_claimed(
+                text, voice=voice, response_format=response_format, speed=speed
+            )
+
+    def _generate_speech_claimed(self, text, voice='Emilia', response_format='mp3', speed=1.0):
         """
         Generates and saves speech audio from text for a specific voice.
 
@@ -403,7 +486,7 @@ class TTSHandler:
         Returns:
             str: Path to the generated audio file.
         """
-        logging.debug(f"generate_speech called with: text={text}, voice={voice}, response_format={response_format}, speed={speed}")
+        logging.debug("generate_speech request: voice=%r format=%r speed=%s characters=%d", voice, response_format, speed, len(text) if isinstance(text, str) else 0)
 
         if not text:
             logging.error("No text available for TTS generation.")
@@ -415,51 +498,63 @@ class TTSHandler:
 
         try:
             # Load the requested voice model (prioritize this model)
-            model = self.load_voice_model(voice)
-            logging.info(f"Using model for voice: {voice}")
-
-            # Perform inference
-            sample_rate, audio_data = self.infer(text, voice, model, speed=speed)
+            with self._inference_lock:
+                model = self.load_voice_model(voice)
+                logging.info("Using model for voice: %s", voice)
+                # The shared cache is not safe across concurrent inference/model swaps.
+                sample_rate, audio_data = self.infer(text, voice, model, speed=speed)
             
-            # Write to WAV first (soundfile doesn't support mp3/opus/aac directly)
-            wav_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
-            sf.write(wav_temp.name, audio_data, sample_rate)
-            wav_temp.close()
-            
-            # Convert to requested format if not WAV
-            if response_format.lower() == 'wav':
-                output_path = wav_temp.name
-            else:
-                output_temp = tempfile.NamedTemporaryFile(delete=False, suffix=f".{response_format}")
-                output_path = output_temp.name
-                output_temp.close()
-                
-                try:
-                    subprocess.run([
-                        "ffmpeg", "-y", "-i", wav_temp.name,
-                        "-c:a", self._get_ffmpeg_codec(response_format),
-                        output_path
-                    ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    logging.info(f"Converted audio to {response_format}: {output_path}")
-                except subprocess.CalledProcessError as e:
-                    logging.error(f"FFmpeg conversion failed: {e.stderr.decode()}")
-                    try:
-                        os.remove(output_path)
-                    except OSError:
-                        pass
-                    raise RuntimeError(f"Failed to convert audio to {response_format}")
-                finally:
-                    try:
-                        os.remove(wav_temp.name)
-                    except OSError:
-                        pass
-            
-            logging.info(f"Generated speech saved to {output_path}")
+            output_path = self._write_audio_file(sample_rate, audio_data, response_format)
+            logging.info("Generated speech audio for voice %s", voice)
             return output_path
         except Exception as e:
             logging.error(f"Error in generate_speech: {e}")
             raise RuntimeError("Failed to generate speech.")
     
+    def _write_audio_file(self, sample_rate, audio_data, response_format):
+        """Encode one request, removing partial WAV and converted files on any error.
+
+        Each temporary file is closed before another library opens it, including
+        on Windows. Only the successfully returned output remains for the HTTP
+        request handler to consume and delete.
+        """
+        fmt = response_format.lower()
+        if fmt not in AUDIO_FORMAT_MIME_TYPES:
+            raise ValueError("Unsupported response format")
+        wav_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+        wav_path = wav_tmp.name
+        wav_tmp.close()
+        converted_path = None
+        retained_path = None
+        try:
+            sf.write(wav_path, audio_data, sample_rate)
+            if fmt == "wav":
+                retained_path = wav_path
+            else:
+                out_tmp = tempfile.NamedTemporaryFile(delete=False, suffix="." + fmt)
+                converted_path = out_tmp.name
+                out_tmp.close()
+                command = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-nostats", "-y", "-i", wav_path, "-c:a", self._get_ffmpeg_codec(fmt)]
+                # Raw PCM has no container header, so ffmpeg needs an explicit muxer.
+                if fmt == "pcm":
+                    command.extend(["-f", "s16le"])
+                command.append(converted_path)
+                subprocess.run(
+                    command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    timeout=self.FFMPEG_TIMEOUT_SECONDS
+                )
+                retained_path = converted_path
+            return retained_path
+        finally:
+            for path in (wav_path, converted_path):
+                if path and path != retained_path:
+                    try:
+                        os.remove(path)
+                    except FileNotFoundError:
+                        pass
+                    except OSError:
+                        logging.warning("Could not delete incomplete generated audio")
+
     def _get_ffmpeg_codec(self, format_name):
         """Map response format to ffmpeg codec."""
         codecs = {

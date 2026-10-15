@@ -53,17 +53,27 @@ def test_handler_passes_per_voice_config_to_f5(monkeypatch, tmp_path):
     for n in ("tts_handler", "utils"):
         sys.modules.pop(n, None)
     mod = importlib.import_module("tts_handler")
+    root = tmp_path / "ckpts"
+    names = {"Emilia": "model_1250000.safetensors", "V0": "model_1200000.safetensors"}
+    available = {}
+    for voice, name in names.items():
+        voice_dir = root / voice
+        voice_dir.mkdir(parents=True)
+        path = voice_dir / name
+        path.write_bytes(b"x")
+        available[voice] = str(path)
     seen = {}
     monkeypatch.setattr(mod, "load_model", lambda cls, cfg, path: seen.setdefault(path, cfg) or "M")
     h = mod.TTSHandler.__new__(mod.TTSHandler)
     h.F5TTS_MODEL_CONFIG = dict(V1_BASE)
+    h.CKPTS_DIR = str(root)
     h.MODEL_LOAD_LIMIT = 2
     h.loaded_models = OrderedDict()
-    h.available_models = {"Emilia": "x/model_1250000.safetensors", "V0": "x/model_1200000.safetensors"}
+    h.available_models = available
     h.load_voice_model("Emilia")
     h.load_voice_model("V0")
-    assert seen["x/model_1250000.safetensors"] == V1_BASE
-    assert seen["x/model_1200000.safetensors"]["text_mask_padding"] is False
-    assert seen["x/model_1200000.safetensors"]["pe_attn_head"] == 1
+    assert seen[available["Emilia"]] == V1_BASE
+    assert seen[available["V0"]]["text_mask_padding"] is False
+    assert seen[available["V0"]]["pe_attn_head"] == 1
     for n in ("tts_handler", "utils"):
         sys.modules.pop(n, None)

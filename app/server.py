@@ -2,7 +2,6 @@ import os
 import io
 import select
 import socket
-import threading
 import base64
 import logging
 from flask import Flask, request, send_file, jsonify, Response
@@ -11,12 +10,23 @@ from dotenv import load_dotenv
 from argparse import ArgumentParser
 
 from tts_handler import TTSHandler
-from utils import require_api_key, AUDIO_FORMAT_MIME_TYPES
+from utils import require_api_key, AUDIO_FORMAT_MIME_TYPES, REQUIRE_API_KEY
+from auth_bind_policy import validate_auth_bind
 from alignment import build_alignment
+from request_validation import parse_speech_request, parse_timestamp_request, RequestValidationError
+from generation_gate import SynthesisBusyError
+from output_limits import read_audio_limited, AudioOutputTooLarge
 
 # Initialize Flask app and load environment variables
 app = Flask(__name__)
 load_dotenv()
+# Inbound payloads are bounded before Flask parses JSON. One request must not
+# enqueue arbitrarily large text into the expensive synthesis pipeline.
+app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_REQUEST_BYTES', '65536'))
+MAX_TEXT_CHARS = int(os.getenv('MAX_TEXT_CHARS', '2000'))
+MAX_AUDIO_OUTPUT_BYTES = int(os.getenv('MAX_AUDIO_OUTPUT_BYTES', '16777216'))
+if min(app.config['MAX_CONTENT_LENGTH'], MAX_TEXT_CHARS, MAX_AUDIO_OUTPUT_BYTES) <= 0:
+    raise ValueError('MAX_REQUEST_BYTES, MAX_TEXT_CHARS and MAX_AUDIO_OUTPUT_BYTES must be positive')
 
 # Parse command-line arguments
 parser = ArgumentParser(description="F5-TTS Server")
@@ -36,7 +46,16 @@ parser.add_argument(
     default=int(os.getenv('PORT', 9090)),
     help="Port to run the server on."
 )
+parser.add_argument(
+    "--host",
+    default=os.getenv("HOST", "0.0.0.0"),
+    help="Host interface to bind (default: 0.0.0.0 for Docker)."
+)
 args = parser.parse_args()
+# Reject unsafe unauthenticated binds *before* expensive model initialization.
+# The container's loopback-published host port is not sufficient when its own
+# process listens on 0.0.0.0 and REQUIRE_API_KEY is explicitly disabled.
+validate_auth_bind(args.host, REQUIRE_API_KEY)
 
 # Load configuration from environment variables with defaults
 API_KEY = os.getenv('API_KEY', 'your_api_key_here')
@@ -58,15 +77,9 @@ logging.info(f"Debug mode is {'enabled' if DEBUG_MODE else 'disabled'}.")
 @app.before_request
 def log_request_info():
     if DEBUG_MODE:
-        # Redact Authorization header
-        redacted_headers = {k: ('***' if 'authorization' in k.lower() else v)
-                            for k, v in request.headers.items()}
-        logging.debug(f"HTTP Request: {request.method} {request.url}")
-        logging.debug(f"Headers: {redacted_headers}")
-        if request.is_json:
-            logging.debug(f"Payload: {request.json}")
-        else:
-            logging.debug("Payload: Non-JSON or empty.")
+        # Never log headers, URL query parameters or synthesis text: credentials
+        # can arrive in either Authorization or xi-api-key, and text is private.
+        logging.debug('HTTP Request: %s %s', request.method, request.path)
 
 # Initialize TTSHandler with CLI arguments and DEFAULT_VOICE
 tts_handler = TTSHandler(
@@ -75,48 +88,29 @@ tts_handler = TTSHandler(
     default_voice=DEFAULT_VOICE
 )
 
-# Leftover temp files if a handler crashes before sending bytes
-_temp_files_to_cleanup = set()
-_temp_files_lock = threading.Lock()
-
-@app.after_request
-def cleanup_temp_files(response):
-    """Clean leftover temp files. Handlers should delete after reading into memory."""
-    with _temp_files_lock:
-        files_to_clean = list(_temp_files_to_cleanup)
-        _temp_files_to_cleanup.clear()
-    for temp_file in files_to_clean:
-        try:
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
-                logging.debug(f"Cleaned up temp file: {temp_file}")
-        except OSError as e:
-            logging.warning(f"Failed to clean up temp file {temp_file}: {e}")
-    return response
+def _delete_request_file(path):
+    """Delete only a file owned by the calling request; never touch peer jobs."""
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logging.warning("Could not delete generated audio file")
 
 
 def _send_and_delete(path, mime_type, download_name):
-    """Read the file fully, delete it, then send from memory so after_request cannot race send_file."""
-    with _temp_files_lock:
-        _temp_files_to_cleanup.add(path)
+    """Buffer audio and delete this request's file before creating the response."""
     try:
-        with open(path, "rb") as fh:
-            payload = fh.read()
-    except Exception:
-        raise
-    else:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
-        with _temp_files_lock:
-            _temp_files_to_cleanup.discard(path)
+        payload = read_audio_limited(path, MAX_AUDIO_OUTPUT_BYTES)
+    finally:
+        _delete_request_file(path)
     return send_file(
         io.BytesIO(payload),
         mimetype=mime_type,
         as_attachment=True,
         download_name=download_name,
     )
+
 
 @app.route('/v1/audio/speech', methods=['POST'])
 @require_api_key
@@ -133,17 +127,18 @@ def text_to_speech():
     Returns:
         Audio file in the requested format.
     """
-    data = request.json
-
-    # Validate request body
-    if not data or 'input' not in data:
-        return jsonify({"error": "Missing 'input' in request body"}), 400
-
-    # Extract parameters from request body with defaults
-    text = data.get('input')
-    voice = data.get('voice') or DEFAULT_VOICE  # Use DEFAULT_VOICE if not provided or empty
-    response_format = data.get('response_format', DEFAULT_RESPONSE_FORMAT)
-    speed = float(data.get('speed', DEFAULT_SPEED))
+    try:
+        params = parse_speech_request(
+            request.get_json(silent=True),
+            default_voice=DEFAULT_VOICE,
+            default_format=DEFAULT_RESPONSE_FORMAT,
+            default_speed=DEFAULT_SPEED,
+            max_text_chars=MAX_TEXT_CHARS,
+        )
+    except RequestValidationError as exc:
+        return jsonify({"error": str(exc)}), 400
+    text, voice = params["text"], params["voice"]
+    response_format, speed = params["response_format"], params["speed"]
 
     # Determine MIME type based on response format
     mime_type = AUDIO_FORMAT_MIME_TYPES.get(response_format.lower(), "audio/mpeg")
@@ -162,6 +157,10 @@ def text_to_speech():
     except ValueError as e:
         logging.error(f"ValueError during TTS generation: {e}")
         return jsonify({"error": str(e)}), 400
+    except AudioOutputTooLarge:
+        return jsonify({"error": "Generated audio exceeds configured output limit"}), 503
+    except SynthesisBusyError:
+        return jsonify({"error": "Speech generator busy; try again later"}), 503
     except RuntimeError as e:
         logging.error(f"RuntimeError during TTS generation: {e}")
         return jsonify({"error": str(e)}), 500
@@ -171,53 +170,37 @@ def text_to_speech():
 
 
 
-def _output_format_to_ext(output_format):
-    raw = (output_format or DEFAULT_RESPONSE_FORMAT or "mp3").lower()
-    if raw.startswith("wav") or raw == "pcm":
-        return "wav"
-    if raw.startswith("ogg") or raw.startswith("opus"):
-        return "ogg"
-    if raw.startswith("flac"):
-        return "flac"
-    return "mp3"
-
 
 @app.route("/v1/text-to-speech/<voice_id>/with-timestamps", methods=["POST"])
 @require_api_key
 def text_to_speech_with_timestamps(voice_id):
     """ElevenLabs-shaped timestamps. Missing aligner software does not fail TTS."""
-    data = request.json or {}
-    text = data.get("text") or data.get("input")
-    if not text:
-        return jsonify({"error": "Missing 'text' in request body"}), 400
-
-    voice = voice_id or DEFAULT_VOICE
-    settings = data.get("voice_settings") or {}
-    speed = float(data.get("speed", settings.get("speed", DEFAULT_SPEED)))
-    response_format = _output_format_to_ext(
-        request.args.get("output_format") or data.get("response_format")
-    )
+    try:
+        params = parse_timestamp_request(
+            request.get_json(silent=True),
+            voice=voice_id or DEFAULT_VOICE,
+            default_format=DEFAULT_RESPONSE_FORMAT,
+            default_speed=DEFAULT_SPEED,
+            output_format=request.args.get("output_format"),
+            max_text_chars=MAX_TEXT_CHARS,
+        )
+    except RequestValidationError as exc:
+        return jsonify({"error": str(exc)}), 400
+    text, voice = params["text"], params["voice"]
+    response_format, speed = params["response_format"], params["speed"]
     mime_type = AUDIO_FORMAT_MIME_TYPES.get(response_format.lower(), "audio/mpeg")
 
     try:
         output_file_path = tts_handler.generate_speech(
             text=text, voice=voice, response_format=response_format, speed=speed
         )
-        with _temp_files_lock:
-            _temp_files_to_cleanup.add(output_file_path)
-        alignment, words, source = build_alignment(text, output_file_path)
         try:
-            with open(output_file_path, "rb") as fh:
-                audio_b64 = base64.b64encode(fh.read()).decode("ascii")
-        except Exception as e:
-            logging.error(f"Failed to read output file: {e}")
-            raise
-        try:
-            os.remove(output_file_path)
-        except OSError:
-            pass
-        with _temp_files_lock:
-            _temp_files_to_cleanup.discard(output_file_path)
+            alignment, words, source = build_alignment(text, output_file_path)
+            audio_b64 = base64.b64encode(
+                read_audio_limited(output_file_path, MAX_AUDIO_OUTPUT_BYTES)
+            ).decode("ascii")
+        finally:
+            _delete_request_file(output_file_path)
         return jsonify({
             "audio_base64": audio_b64,
             "alignment": alignment,
@@ -225,6 +208,10 @@ def text_to_speech_with_timestamps(voice_id):
             "words": words,
             "alignment_source": source,
         })
+    except AudioOutputTooLarge:
+        return jsonify({"error": "Generated audio exceeds configured output limit"}), 503
+    except SynthesisBusyError:
+        return jsonify({"error": "Speech generator busy; try again later"}), 503
     except ValueError as e:
         logging.error(f"ValueError during timestamped TTS: {e}")
         return jsonify({"error": str(e)}), 400
@@ -406,7 +393,7 @@ def get_loaded_models():
 if __name__ == '__main__':
     logging.info(f"F5-TTS API running on http://localhost:{PORT}")
     # Start the server using Gevent WSGI server for better concurrency support
-    http_server = WSGIServer(('0.0.0.0', PORT), app, handler_class=_SocketExposingHandler)
+    http_server = WSGIServer((args.host, PORT), app, handler_class=_SocketExposingHandler)
     try:
         http_server.serve_forever()
     except KeyboardInterrupt:

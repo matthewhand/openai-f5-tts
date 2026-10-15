@@ -4,6 +4,7 @@ import os
 import logging
 from dotenv import load_dotenv
 import json
+import hmac
 
 # Load environment variables from .env file
 load_dotenv()
@@ -28,7 +29,9 @@ def getenv_bool(name: str, default: bool = False) -> bool:
 API_KEY = os.getenv('API_KEY', 'your_api_key_here')
 REQUIRE_API_KEY = getenv_bool('REQUIRE_API_KEY', True)
 
-if not API_KEY or API_KEY == 'your_api_key_here':
+# A secret is mandatory when authentication is enabled. The explicitly
+# unauthenticated local mode must not require a dummy placeholder credential.
+if REQUIRE_API_KEY and (not API_KEY or API_KEY == 'your_api_key_here'):
     raise ValueError("API_KEY must be set in the environment or .env file.")
 
 def require_api_key(f):
@@ -58,7 +61,10 @@ def require_api_key(f):
             return jsonify({"error": "Missing authentication: provide 'Authorization: Bearer <token>' or 'xi-api-key: <token>' header"}), 401
 
         # Validate the token against the stored API key
-        if token != API_KEY:
+        # compare_digest(str, str) rejects non-ASCII input with TypeError.
+        # UTF-8 bytes preserve constant-time comparison while malformed keys
+        # are denied with 401 rather than becoming an HTTP 500.
+        if not hmac.compare_digest(token.encode('utf-8'), API_KEY.encode('utf-8')):
             logging.warning("Invalid API key provided.")
             return jsonify({"error": "Invalid API key"}), 401
 
