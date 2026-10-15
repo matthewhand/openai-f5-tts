@@ -15,6 +15,12 @@
   - [Prerequisites](#prerequisites-1)
   - [Installation Steps](#installation-steps)
 - [API Endpoints](#api-endpoints)
+  - [POST /v1/audio/speech](#v1audiospeech)
+  - [POST /v1/audio/speech/stream](#v1audiospeechstream)
+  - [GET /v1/models](#v1models)
+  - [GET /v1/voices](#v1voices)
+  - [GET /v1/voices/all](#v1voicesall)
+- [Streaming Test Client](#streaming-test-client)
 - [Adding Your Own Fine-Tuned Checkpoint](#adding-your-own-fine-tuned-checkpoint)
 - [TODO](#todo)
 - [Support](#support)
@@ -292,7 +298,6 @@ With this explicit loopback bind, the API will be accessible at `http://127.0.0.
 
 Primary route for generating speech from text input. With the default `REQUIRE_API_KEY=True`, supply a Bearer token or an `xi-api-key` header. Authentication can be disabled only with an explicit numeric loopback bind as explained above.
 
-- **URL**: `/v1/audio/speech`
 - **Method**: `POST`
 - **Headers**: `Authorization: Bearer <API_KEY>`
 - **Data (JSON)**:
@@ -310,13 +315,40 @@ Primary route for generating speech from text input. With the default `REQUIRE_A
 curl -X POST http://localhost:9090/v1/audio/speech \
      -H "Authorization: Bearer <API_KEY>" \
      -H "Content-Type: application/json" \
-     -d '{
-           "input": "Hello world",
-           "voice": "Emilia",
-           "response_format": "mp3",
-           "speed": 1.0
-         }' > output.mp3
+     -d '{"input": "Hello world", "voice": "Emilia", "response_format": "mp3"}' \
+     > output.mp3
 ```
+
+---
+
+### `/v1/audio/speech/stream`
+
+Streams speech as raw **int16 PCM at 16 kHz** using chunked transfer encoding. Designed for real-time voice agent pipelines (e.g. Hugging Face speech-to-speech).
+
+The input text is split into sentences by a small built-in splitter (no NLTK and no runtime downloads; it handles abbreviations like "Dr." and Chinese punctuation). Each sentence is synthesised by F5-TTS and flushed to the client immediately, so playback can begin before the full response is ready. Dropping the HTTP connection mid-stream stops further synthesis — useful for barge-in handling.
+
+- **Method**: `POST`
+- **Headers**: `Authorization: Bearer <API_KEY>`
+- **Body (JSON)**:
+  - `input` (string): Text to synthesise.
+  - `voice` (string, optional): Voice model to use (default: `Emilia`).
+  - `speed` (float, optional): Speed factor (default: `1.0`).
+- **Response**:
+  - `Content-Type: audio/L16; rate=16000; channels=1`
+  - `X-Sample-Rate: 16000`
+  - `X-Audio-Channels: 1`
+  - `X-Audio-Encoding: int16`
+  - Body: raw little-endian int16 PCM, one chunk per sentence.
+
+```bash
+curl -X POST http://localhost:9090/v1/audio/speech/stream \
+     -H "Authorization: Bearer <API_KEY>" \
+     -H "Content-Type: application/json" \
+     -d '{"input": "Hello. This streams sentence by sentence.", "voice": "Emilia"}' \
+     > output.pcm
+```
+
+> **Note**: F5-TTS is non-autoregressive — full per-sentence inference is required before each chunk can be sent. Latency to first audio is roughly the time to synthesise the first sentence (~1–2 s on GPU).
 
 ### `/v1/models`
 
@@ -357,11 +389,36 @@ Lists all supported voices, regardless of language.
 
 Reports names of voice models currently present in the in-process model cache, not proof that they have produced audio. Authenticated `GET`; response is JSON with a `loaded_models` array. Cache contents can change after voice switches.
 
+## Streaming Test Client
+
+`scripts/stream_client.py` (standard library only) hits the streaming endpoint and writes the received PCM to a WAV file for verification.
+
+```bash
+python scripts/stream_client.py \
+  --text "Hello. The quick brown fox jumps over the lazy dog. Streaming works." \
+  --voice Emilia \
+  --output stream_test.wav
+```
+
+Options:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--host` | `localhost` | Server hostname |
+| `--port` | `9090` | Server port |
+| `--api-key` | `$API_KEY` env var | Bearer token |
+| `--voice` | `$DEFAULT_VOICE` env var | Voice name |
+| `--speed` | `1.0` | Speed factor |
+| `--text` | built-in sample | Text to synthesise |
+| `--output` | `stream_test_output.wav` | Output WAV path |
+
 ---
 
 ## Adding Your Own Fine-Tuned Checkpoint
 
 Enhance the TTS system by adding your own fine-tuned voice model. Follow these steps:
+
+> **v0 vs v1 checkpoints.** F5-TTS v0 checkpoints (`model_1200000.*`) need different model flags than v1 (`model_1250000.*`); loading one with the other's settings gives babble rather than an error. The server picks the config from the filename. For anything else, put a `model_config.json` next to the checkpoint, e.g. `{"text_mask_padding": false, "pe_attn_head": 1}` (merged over the v1 defaults).
 
 **Step 1: Create a Directory for Your Voice Model**
 
@@ -436,6 +493,7 @@ curl -X POST http://localhost:9090/v1/audio/speech \
 - [x] Expose an OpenAI-style `/v1/audio/speech` endpoint (not full OpenAI API compatibility)
 - [ ] Independently verify Docker/CUDA compatibility with an approval-gated clean build and licensed model
 - [x] Multiple voice models
+- [x] Streaming endpoint for real-time voice agent pipelines
 - [ ] Add expression parsing for nuanced speech
 - [x] Document the checkpoint filename discovery rules (see below); independently verify the setup with licensed checkpoints before declaring this complete
 - [ ] Enhance error handling and logging

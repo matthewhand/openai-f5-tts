@@ -68,6 +68,7 @@ class CheckpointPathTrustTests(unittest.TestCase):
             "validate_checkpoint_root": __import__(
                 "checkpoint_paths"
             ).validate_checkpoint_root,
+            "model_config_for": lambda path: {},
         }
         self.discover = method_from_source("discover_models", ns)
         self.load = method_from_source("load_voice_model", ns)

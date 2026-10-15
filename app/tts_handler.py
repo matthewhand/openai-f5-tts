@@ -30,6 +30,8 @@ from checkpoint_paths import (
     UntrustedCheckpointPath, validate_checkpoint_root, validate_checkpoint_path,
     CHECKPOINT_NAMES,
 )
+from sentences import split_sentences
+from model_config import model_config_for
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -68,6 +70,7 @@ class TTSHandler:
         # Serialize model swaps and inference; overlapping GPU jobs are unsafe here.
         self._inference_lock = Semaphore(1)
         self._generation_gate = GenerationGate()
+        self._ref_text_cache: dict = {}
 
         self.cleanup_cache()
         self.processor, self.whisper_model = self.load_whisper_model()
@@ -174,7 +177,7 @@ class TTSHandler:
         # old model was evicted before allocation to cap peak memory, it stays
         # unloaded; later requests may reload that voice from disk.
         try:
-            model = load_model(DiT, self.F5TTS_MODEL_CONFIG, model_path)
+            model = load_model(DiT, model_config_for(model_path), model_path)
             if model is None:
                 raise RuntimeError('Voice checkpoint loader returned no model')
         except Exception:
@@ -394,6 +397,7 @@ class TTSHandler:
     def transcribe_audio(self, voice_name):
         """
         Transcribes the reference audio file for a given voice using Whisper.
+        Result is cached in memory so Whisper only runs once per voice per server lifetime.
 
         Args:
             voice_name (str): The name of the voice.
@@ -401,6 +405,11 @@ class TTSHandler:
         Returns:
             str: Transcription text.
         """
+        cached = getattr(self, "_ref_text_cache", None)
+        if cached is not None and voice_name in cached:
+            logging.debug(f"Using cached transcription for voice '{voice_name}'.")
+            return cached[voice_name]
+
         logging.info(f"Transcribing reference audio for voice '{voice_name}'...")
         processed_audio_path = self.process_reference_audio(voice_name)
 
@@ -410,7 +419,6 @@ class TTSHandler:
         audio_input, sample_rate = sf.read(processed_audio_path)
         logging.debug(f"Processed audio loaded: {processed_audio_path} with sample rate {sample_rate}")
 
-        # Process audio as input features for Whisper
         inputs = self.processor(audio_input, sampling_rate=16000, return_tensors="pt").input_features.to(self.device)
 
         with torch.no_grad():
@@ -418,6 +426,9 @@ class TTSHandler:
 
         transcription = self.processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
         logging.debug("Reference transcription produced %d characters", len(transcription))
+        if getattr(self, "_ref_text_cache", None) is None:
+            self._ref_text_cache = {}
+        self._ref_text_cache[voice_name] = transcription
         return transcription
 
     def infer(self, gen_text, voice_name, model, speed=1.0):
@@ -555,3 +566,51 @@ class TTSHandler:
             'pcm': 'pcm_s16le',
         }
         return codecs.get(format_name.lower(), 'libmp3lame')
+
+
+
+    def generate_speech_stream(self, text, voice='Emilia', speed=1.0):
+        """
+        Generator that splits text into sentences and yields int16 PCM bytes at 16 kHz
+        as each sentence is synthesised. Loads the model and reference data once before
+        the loop so neither is reloaded per sentence.
+
+        Args:
+            text (str): Full text to synthesise.
+            voice (str): Voice name.
+            speed (float): Speed adjustment factor.
+
+        Yields:
+            bytes: Raw int16 little-endian PCM audio at 16 kHz, one chunk per sentence.
+        """
+        if not text:
+            raise ValueError("No text provided for TTS generation.")
+        if voice not in self.available_models:
+            raise ValueError(f"Voice '{voice}' is not available.")
+
+        model = self.load_voice_model(voice)
+        ref_text = self.transcribe_audio(voice)
+        ref_audio_path = self.process_reference_audio(voice)
+
+        sentences = split_sentences(text)
+        logging.info(f"Streaming {len(sentences)} sentence(s) for voice '{voice}'.")
+
+        try:
+            for sentence in sentences:
+                sentence = sentence.strip()
+                if not sentence:
+                    continue
+                logging.debug(f"Synthesising sentence: {sentence}")
+                final_wave, final_sample_rate, _ = infer_process(
+                    ref_audio_path, ref_text, sentence, model, self.vocoder,
+                    cross_fade_duration=0.15, speed=speed
+                )
+                audio = final_wave.squeeze().cpu().numpy() if isinstance(final_wave, torch.Tensor) else final_wave.squeeze()
+
+                if final_sample_rate != 16000:
+                    audio = librosa.resample(audio, orig_sr=final_sample_rate, target_sr=16000)
+
+                pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+                yield pcm.tobytes()
+        except GeneratorExit:
+            logging.info(f"Client disconnected — stopping stream for voice '{voice}'.")

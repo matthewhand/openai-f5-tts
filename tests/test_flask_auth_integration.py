@@ -40,6 +40,7 @@ class RealFlaskAuthTests(unittest.TestCase):
         fake_gevent.__path__ = []
         fake_pywsgi = types.ModuleType("gevent.pywsgi")
         fake_pywsgi.WSGIServer = object
+        fake_pywsgi.WSGIHandler = object
 
         class FakeTTSHandler:
             def __init__(self, **kwargs):
@@ -214,6 +215,7 @@ class RealFlaskAuthTests(unittest.TestCase):
         fake_gevent.__path__ = []
         fake_pywsgi = types.ModuleType("gevent.pywsgi")
         fake_pywsgi.WSGIServer = object
+        fake_pywsgi.WSGIHandler = object
         fake_alignment = types.ModuleType("alignment")
         fake_alignment.build_alignment = lambda *args: (None, [], "unavailable")
         with mock.patch.dict(os.environ, {"HOST": host, "REQUIRE_API_KEY": "False"}), \

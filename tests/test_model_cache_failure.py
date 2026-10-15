@@ -21,6 +21,7 @@ def compiled_method(name, namespace):
     # Cache semantics use a fake checkpoint loader and paths; dedicated path
     # tests exercise the actual on-disk path validator separately.
     namespace.setdefault("validate_checkpoint_path", lambda root, voice, path: path)
+    namespace.setdefault("model_config_for", lambda path: {})
     method = next(n for n in CLASS.body if isinstance(n, ast.FunctionDef) and n.name == name)
     method = ast.FunctionDef(
         name=method.name, args=method.args, body=method.body,

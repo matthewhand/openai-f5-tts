@@ -21,7 +21,8 @@ def validate_auth_bind(host, require_api_key):
         raise ValueError(
             "Unauthenticated server requires an explicit numeric loopback bind"
         ) from exc
-    if not address.is_loopback:
+    # IPv4-mapped loopback (::ffff:127.0.0.1) is not an explicit numeric bind.
+    if getattr(address, "ipv4_mapped", None) is not None or not address.is_loopback:
         raise ValueError(
             "Unauthenticated server requires an explicit numeric loopback bind"
         )
