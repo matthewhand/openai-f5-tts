@@ -53,6 +53,8 @@ def parse_timestamp_request(data, *, voice, default_format, default_speed, outpu
     if not isinstance(data, dict):
         raise RequestValidationError("Expected a JSON object")
     text = data.get("text") or data.get("input")
+    if not isinstance(text, str) or not text.strip():
+        raise RequestValidationError("'text' (or 'input') must be a nonempty string")
     settings = data.get("voice_settings")
     if settings is None:
         settings = {}
