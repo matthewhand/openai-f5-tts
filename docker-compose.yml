@@ -1,5 +1,6 @@
 services:
   app:
+    container_name: openai-f5-tts
     build: .
     runtime: nvidia
     environment:

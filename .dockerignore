@@ -1,0 +1,13 @@
+.git
+.github
+cache
+ckpts
+ref_audio
+.env
+.venv
+venv
+__pycache__
+.pytest_cache
+_navbar-xfer
+_reachy-webui
+F5-TTS
