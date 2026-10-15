@@ -80,6 +80,13 @@ class SpeechValidationTests(unittest.TestCase):
                     parse_timestamp_request(data, voice="Emilia", output_format=fmt,
                                             default_format="mp3", default_speed=1.0)
 
+    def test_timestamp_request_without_text_names_the_missing_field(self):
+        for data in ({}, {"text": ""}, {"input": None}, {"text": "   "}, {"text": 5}):
+            with self.subTest(data=data):
+                with self.assertRaisesRegex(RequestValidationError, "'text' \\(or 'input'\\)"):
+                    parse_timestamp_request(data, voice="Emilia",
+                                            default_format="mp3", default_speed=1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

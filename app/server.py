@@ -301,13 +301,14 @@ def text_to_speech_stream():
                 yield first
             # Check the socket *before* each sentence: a write to a closed peer only
             # fails on the 2nd attempt, which would waste a whole extra sentence of GPU.
-            while not _client_disconnected(environ):
+            while True:
+                if _client_disconnected(environ):
+                    logging.info("Client disconnected - stopping stream.")
+                    break
                 chunk = next(chunks, None)
                 if chunk is None:
                     break
                 yield chunk
-            else:
-                logging.info("Client disconnected - stopping stream.")
         except Exception as e:  # headers already sent: truncate cleanly, keep earlier audio
             logging.error(f"Stream aborted mid-response: {e}")
         finally:

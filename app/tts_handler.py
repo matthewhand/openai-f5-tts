@@ -614,3 +614,4 @@ class TTSHandler:
                 yield pcm.tobytes()
         except GeneratorExit:
             logging.info(f"Client disconnected — stopping stream for voice '{voice}'.")
+            raise

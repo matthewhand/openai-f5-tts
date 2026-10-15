@@ -33,7 +33,10 @@ def test_sidecar_json_overrides_naming_convention(tmp_path):
     assert cfg == {**V1_BASE, "text_mask_padding": False, "pe_attn_head": 1}
     # sidecar wins even over the filename convention
     (tmp_path / "model_config.json").write_text(json.dumps({"ff_mult": 2}))
-    assert model_config_for(str(tmp_path / "model_1200000.safetensors")) == V1_BASE
+    cfg = model_config_for(str(tmp_path / "model_1200000.safetensors"))
+    assert cfg == V1_BASE
+    # the v0 overrides must be suppressed, not merely equal by accident
+    assert "text_mask_padding" not in cfg and "pe_attn_head" not in cfg
 
 
 def test_bad_sidecar_is_a_clear_error(tmp_path):
@@ -63,7 +66,7 @@ def test_handler_passes_per_voice_config_to_f5(monkeypatch, tmp_path):
         path.write_bytes(b"x")
         available[voice] = str(path)
     seen = {}
-    monkeypatch.setattr(mod, "load_model", lambda cls, cfg, path: seen.setdefault(path, cfg) or "M")
+    monkeypatch.setattr(mod, "load_model", lambda cls, cfg, path: seen.update({path: cfg}) or "M")
     h = mod.TTSHandler.__new__(mod.TTSHandler)
     h.F5TTS_MODEL_CONFIG = dict(V1_BASE)
     h.CKPTS_DIR = str(root)
