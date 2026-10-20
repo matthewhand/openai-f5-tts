@@ -2,12 +2,13 @@
 
 <img src="assets/images/logo.webp" alt="Project Logo" width="200"/>
 
-**Release status: experimental / alpha (source-reviewed 14 October 2026).** This Flask/Gevent adapter exposes local F5-TTS synthesis through an OpenAI-style speech route, lists installed voices/models and supports an optional ElevenLabs-shaped timestamp response. Actual model inference, fresh-install reliability, CPU use and Docker deployment have **not** been revalidated for this revision. Do not expose this service to the public Internet.
+**Release status: SOHO-oriented community beta, verified on one machine (20 October 2026).** This independently developed API wrapper exposes upstream F5-TTS through an OpenAI-style speech route, sentence streaming, voice discovery and estimated timestamps. Real NVIDIA GPU inference was verified in Docker Desktop with installed v0 and v1 checkpoints. Use sequential requests on a trusted system; simultaneous streaming, CPU-only operation and cold dependency installation remain unverified. This project is not affiliated with OpenAI or the upstream F5-TTS authors. See the [verification report](docs/verification-2026-10-20.md).
 
 ---
 
 ## Table of Contents
 
+- [Client apps and multiple voices](#client-apps-and-multiple-voices)
 - [Prerequisites](#prerequisites)
 - [Deployment Instructions](#deployment-instructions)
   - [Using Docker Compose (Experimental Local Preview)](#using-docker-compose-experimental-local-preview)
@@ -29,28 +30,87 @@
 
 ---
 
+## Client apps and multiple voices
+
+Client apps send authenticated HTTP requests to the API. Use the published host
+port: the repository default is `http://127.0.0.1:9090`; the verified local setup
+uses port `9091`. A Docker client on the same Compose network can use `http://app:9090`.
+
+```mermaid
+sequenceDiagram
+    participant C as Client app
+    participant A as openai-f5-tts API
+    participant V as Selected F5-TTS voice
+    C->>A: GET /v1/voices with Bearer token
+    A-->>C: Installed voice names
+    alt Non-streaming
+        C->>A: POST /v1/audio/speech with input, voice, response_format
+        A->>V: Load selected checkpoint and matching reference audio
+        V-->>A: Complete generated audio
+        A-->>C: Complete WAV or MP3 response
+    else Sentence streaming
+        C->>A: POST /v1/audio/speech/stream with input and voice
+        A->>V: Load selected checkpoint and matching reference audio
+        loop Each sentence
+            A->>V: Synthesize sentence
+            V-->>A: Sentence audio
+            A-->>C: 16 kHz mono int16 PCM bytes
+        end
+    end
+```
+
+This uses GitHub-supported Mermaid sequence-diagram syntax. Every request in the
+diagram requires `Authorization: Bearer <API_KEY>` when authentication is enabled.
+The streaming client needs PCM playback support; this route sends chunked HTTP
+audio rather than an MP3 file or server-sent events.
+
+**Multiple voices are selectable per request in both modes.** Each installed voice
+needs a checkpoint directory under `ckpts/<voice>/` and matching reference audio
+under `ref_audio/<voice>.<extension>`. Discover names with `GET /v1/voices`, then
+send the chosen name in the `voice` field. For example:
+
+| Mode | Endpoint | JSON body |
+|---|---|---|
+| Complete audio file | `POST /v1/audio/speech` | `{"input":"Hello from Emilia.","voice":"Emilia","response_format":"mp3"}` |
+| Sentence streaming | `POST /v1/audio/speech/stream` | `{"input":"Hello from Scarlett. This is the next sentence.","voice":"Scarlett"}` |
+
+Either installed voice can be used with either endpoint. The timestamp route also
+selects its voice, in `POST /v1/text-to-speech/<voice>/with-timestamps`.
+
+`MODEL_LOAD_LIMIT` controls how many checkpoints remain loaded, **not** how many
+voices can be installed or selected. Its default is `1`: switching voices evicts
+the previous checkpoint and loads the requested one. A larger limit can keep more
+voices warm if GPU memory permits, but does not enable safe simultaneous synthesis.
+Whisper, the vocoder and inference workspace also use memory.
+
+Use one synthesis request at a time across both modes. Ordinary synthesis and
+timestamp requests use a process-local generation gate; streaming currently does
+not share that gate, so overlapping streams or voice switches must not be assumed
+safe. For an application that needs parallel voice jobs, use an application queue
+or isolated service instances, with separate model caches and sufficient GPU memory.
+
 ## Current implementation and limitations
 
 - `POST /v1/audio/speech` generates audio using an installed F5-TTS checkpoint, a matching reference-audio file and a locally loaded Whisper transcription model. The documented `speed` parameter reaches the inference call; supported conversions use FFmpeg.
 - `GET /v1/models`, `GET /v1/voices`, `GET /v1/voices/all` and `GET /v1/loaded_models` are authenticated. Voice language metadata is **not** implemented; `/v1/voices?language=...` or `?locale=...` currently returns an empty `voices` list for nonempty filters, not a working language-filtered result.
 - `POST /v1/text-to-speech/{voice}/with-timestamps` returns base64 audio and, where duration can be read, **duration-weighted estimated timings**, *not* forced alignment. Null alignment is possible.
-- Sentence streaming is **not implemented in this draft branch or on `main`**; see the proposed [streaming PR #6](https://github.com/matthewhand/openai-f5-tts/pull/6).
+- Sentence streaming is implemented on `main` at `POST /v1/audio/speech/stream`, with one synthesized sentence sent at a time as 16 kHz mono signed int16 little-endian PCM. It was verified with real GPU inference; see the [verification report](docs/verification-2026-10-20.md).
 - The Compose setup currently requires NVIDIA GPU container support and mounts local checkpoint and reference-audio folders. The installer pulls an **unpinned** upstream F5-TTS dependency; reproducible builds have not been demonstrated.
-- **Checkpoint path-trust guard (source-only verified):** discovery now checks that the configured checkpoint root and its ancestors are not symlinks, and that voice directories and selected `.safetensors` files are real directories / singly linked regular files, not symlinks or hardlinks. Immediately before loading a previously discovered voice, the path is checked again **before any loaded model is evicted**. A stale or substituted path fails without invoking the model loader. Keep the checkpoint tree trusted and immutable to less-privileged writers: pathname checks cannot eliminate **replacement races** between validation and the upstream loader opening the file. This does **not** prove file authenticity, content format, signature, integrity, permission confinement or licensing. Live inference and Windows-native path behavior are unverified.
+- **Checkpoint path-trust guard (source-only verified):** discovery now checks that the configured checkpoint root and its ancestors are not symlinks, and that voice directories and selected `.safetensors` files are real directories / singly linked regular files, not symlinks or hardlinks. Immediately before loading a previously discovered voice, the path is checked again **before any loaded model is evicted**. A stale or substituted path fails without invoking the model loader. Keep the checkpoint tree trusted and immutable to less-privileged writers: pathname checks cannot eliminate **replacement races** between validation and the upstream loader opening the file. This does **not** prove file authenticity, content format, signature, integrity, permission confinement or licensing. Checkpoint-substitution attacks during live inference and Windows-native path behavior remain unverified; ordinary Docker inference is covered by the verification report.
 - **Checkpoint loading is native-safetensors-only.** The wrapper discovers `model_1250000.safetensors` first, or `model_1200000.safetensors`; it does **not** deserialize or automatically convert legacy pickle-based `.pt` files. Users with only `.pt` checkpoints must obtain a genuine `.safetensors` export from a trusted offline training/export environment before using this branch. Do not simply rename a `.pt` file.
-- Incoming JSON requests are bounded by `MAX_REQUEST_BYTES` (default 65536) and `MAX_TEXT_CHARS` (default 2000); speed must be between 0.25 and 4. A **process-local, non-blocking single-generation gate** now covers model inference and audio conversion. A second simultaneous request receives HTTP **503** rather than waiting behind a growing queue. This is **not** a cross-process or cluster-wide limit. HTTP/body/credential debug logging has been removed, but upstream library logs are not independently audited.
+- Incoming JSON request bodies are bounded by `MAX_REQUEST_BYTES` (default 65536). Ordinary synthesis and timestamp requests additionally enforce `MAX_TEXT_CHARS` (default 2000); speed must be between 0.25 and 4. Their **process-local, non-blocking single-generation gate** covers model inference and audio conversion and raises HTTP **503** when occupied. Streaming does not currently share that gate or the character-limit validator. This is not a cross-process or cluster-wide limit. Wrapper HTTP/body/credential debug logging has been removed, but upstream inference libraries can still print generated text; their logs are not independently sanitized.
 - The Python wrapper is MIT-licensed. **Upstream pretrained F5-TTS model weights are CC-BY-NC** per [SWivid/F5-TTS licensing](https://github.com/SWivid/F5-TTS#license); this repository's MIT license does not grant commercial rights to those weights. Check any reference-audio and voice rights separately.
 
 
 ### Reference-audio and cache pathname trust
 
-- **Reference-audio file trust (source-only guarded):** `get_ref_audio_path` validates a one-segment voice name and a non-symlinked reference-audio root (including ancestors), and accepts only singly linked regular input files with supported extensions. It rejects symlink and hardlink inputs rather than following them. Before FFmpeg writes or reads, cached WAV/PCM paths are checked for real singly linked regular files under a non-symlinked cache root; dangling symlinks, directories and unexpected paths are rejected. Pre-existing intermediate `<voice>_processed.pcm` files now fail closed rather than being clobbered or deleted; an operator must inspect/remove stale files separately in their trusted private workspace. The cached WAV is rechecked before decoding/resampling, and before Whisper reads it. Directory owners must keep `ref_audio/`, `ref_audio_cache/` and their ancestors private to trusted writers. **Metadata checks are not race-free:** a concurrent pathname swap before FFmpeg/Whisper opens the path can defeat these checks. Neither extension nor metadata validation proves audio content, consent, integrity, or provenance, or sandboxes FFmpeg. No live FFmpeg, Whisper or model execution was performed.
+- **Reference-audio file trust (source-only guarded):** `get_ref_audio_path` validates a one-segment voice name and a non-symlinked reference-audio root (including ancestors), and accepts only singly linked regular input files with supported extensions. It rejects symlink and hardlink inputs rather than following them. Before FFmpeg writes or reads, cached WAV/PCM paths are checked for real singly linked regular files under a non-symlinked cache root; dangling symlinks, directories and unexpected paths are rejected. Pre-existing intermediate `<voice>_processed.pcm` files now fail closed rather than being clobbered or deleted; an operator must inspect/remove stale files separately in their trusted private workspace. The cached WAV is rechecked before decoding/resampling, and before Whisper reads it. Directory owners must keep `ref_audio/`, `ref_audio_cache/` and their ancestors private to trusted writers. **Metadata checks are not race-free:** a concurrent pathname swap before FFmpeg/Whisper opens the path can defeat these checks. Neither extension nor metadata validation proves audio content, consent, integrity, or provenance, or sandboxes FFmpeg. No live FFmpeg, Whisper or model execution was performed during the 14 October source review; the normal execution path was subsequently verified on 20 October as described in the verification report.
 
 ### Bounded output buffering and FFmpeg safeguards
 
 - `MAX_AUDIO_OUTPUT_BYTES` (positive integer, default **16777216 = 16 MiB**) bounds each file read by **limit + 1 byte** in both `/v1/audio/speech` and the timestamped base64 route. Oversized generated output returns HTTP **503** with `Generated audio exceeds configured output limit`; the request-owned output file is removed. The size check happens **after** synthesis and encoding, so it does not prevent large intermediate audio allocations or disk writes. Even an accepted timestamped response expands during base64 encoding and JSON serialization; aggregate request memory is not independently bounded.
 - `FFMPEG_TIMEOUT_SECONDS` (positive integer, default **120**) applies separately to all **four** FFmpeg call sites: three reference-audio preparation stages and one final audio conversion. FFmpeg is invoked with `-nostdin -hide_banner -loglevel error -nostats`. On reference conversion failure or timeout, incomplete cached WAV and intermediate PCM files are discarded so a later request can retry. A request whose final encoding fails uses the existing per-request audio cleanup; a model inference stall is **not** bounded by the FFmpeg timeout.
-- These are **source-level mitigations**, verified through deterministic mocked file/subprocess and real Flask test-client regressions, **not** runtime guarantees for GPU memory, total disk usage, concurrent HTTP responses, native-library termination or multi-worker deployments. No model load, real FFmpeg or container startup was performed in this review.
+- These are **source-level mitigations**, verified through deterministic mocked file/subprocess and real Flask test-client regressions, **not** runtime guarantees for GPU memory, total disk usage, concurrent HTTP responses, native-library termination or multi-worker deployments. No model load, real FFmpeg or container startup was performed during that earlier source review; see the verification report for the subsequent model-backed Docker checks.
 
 ### Model-cache recovery and authentication contract
 
@@ -63,14 +123,14 @@
 
 ### Concurrency and temporary-file status
 
-The draft branch now rejects simultaneous synthesis work with HTTP 503 inside one process. A separate request-owned encoder removes partial WAV/converted files after success or failure; deterministic mock-backed regressions exercise both paths. The Python server still has **no cross-process admission mechanism**, no proved scheduling fairness and no model-backed concurrent load measurements. Avoid multiple workers or exposing the API on untrusted networks until an independent release review.
+Ordinary synthesis and timestamp requests have a process-local generation gate. Streaming currently bypasses that gate; use sequential requests across all synthesis endpoints. A separate request-owned encoder removes partial WAV/converted files after success or failure; deterministic mock-backed regressions exercise both paths. The Python server still has **no cross-process admission mechanism**, no proved scheduling fairness and no model-backed concurrent load measurements. Avoid multiple workers or exposing the API on untrusted networks until an independent release review.
 
 ## Prerequisites
 
 Before getting started, ensure you have the following installed on your system:
 
 - **Git**: For cloning the repository.
-- **Docker and NVIDIA Container Toolkit**: Required for the existing GPU-focused Docker Compose configuration. The published container path has not been freshly verified.
+- **Docker with NVIDIA GPU support**: Required for the existing GPU-focused Compose configuration. The local Docker Desktop deployment was verified on 20 October 2026; cold dependency installation remains unverified.
   - **Linux Users**: Tested with `docker.io` on Ubuntu 24.04 LTS.
   - **Windows Users**: Tested with Docker Desktop on Windows 11 (using WSL2 backend).
 - **Python 3.10**: Required for development setup.
@@ -82,7 +142,7 @@ Before getting started, ensure you have the following installed on your system:
 
 ### Using Docker Compose (Experimental Local Preview)
 
-This experimental Compose configuration packages the Flask application and its dependencies; it has **not** passed a clean build or real speech acceptance test. It requires a prepared, legally usable checkpoint and audio sample before it is functional.
+This Compose configuration packages the Flask application and its dependencies. A rebuild using cached dependencies passed real GPU speech tests on 20 October 2026. A cold dependency installation remains unverified. Prepare a checkpoint and matching reference audio before starting the service; see the verification report for the exact tested scope.
 
 **Step 1: Ensure Docker is Installed**
 
@@ -164,7 +224,7 @@ docker compose up --build -d
 
 *This command may take several minutes to complete, especially the first time as Docker downloads the necessary images.*
 
-**Caution:** Compose now starts the API directly, rather than running a potentially failing inference test first. An authenticated models-list response **does not** establish that actual synthesis works. The Docker profile assumes NVIDIA GPU support and may download the large Whisper model at startup; an audio smoke test needs separate approval.
+Compose starts the API directly. An authenticated model-list response does not establish successful synthesis: test an actual speech request. This configuration requires NVIDIA GPU support and may download the large Whisper model at first startup.
 
 **Step 6: Access the API**
 
@@ -192,7 +252,7 @@ Use `curl` to verify that the service is running correctly and that the "Emilia"
 curl -H "Authorization: Bearer <YOUR_REAL_API_KEY>" http://127.0.0.1:9090/v1/models
 ```
 
-You should see a `models` list if initialization succeeds, but a model can appear as loaded without any successful speech request. Confirm actual audio only with an approved local inference smoke test.
+You should see a `models` list if initialization succeeds. Follow it with a real audio request using an installed voice; discovery alone is not proof of successful synthesis.
 
 ---
 
@@ -348,7 +408,7 @@ curl -X POST http://localhost:9090/v1/audio/speech/stream \
      > output.pcm
 ```
 
-> **Note**: F5-TTS is non-autoregressive — full per-sentence inference is required before each chunk can be sent. Latency to first audio is roughly the time to synthesise the first sentence (~1–2 s on GPU).
+> **Note**: Full per-sentence inference is required before each sentence can be sent. First-audio latency includes model loading and reference processing when needed. The local two-sentence checks observed first audio at 2.813 seconds for Scarlett and 14.812 seconds for the initial Emilia stream; these are individual observations, not latency guarantees.
 
 ### `/v1/models`
 
@@ -468,7 +528,7 @@ Add a reference audio file in the `ref_audio/` directory:
 
 **Step 4: Verify the checkpoint format**
 
-Confirm you have a regular file under `ckpts/MyVoice/` ending in `.safetensors`, not merely a renamed `.pt` file. No automatic `.pt` conversion occurs. Checkpoints must be trusted and licensed; the extension check is **not** a guarantee that an arbitrary model file is safe or functional. The service cannot be called release-ready until actual licensed-model inference is separately approved and verified.
+Confirm you have a regular file under `ckpts/MyVoice/` ending in `.safetensors`, not merely a renamed `.pt` file. No automatic `.pt` conversion occurs. Checkpoints must be trusted and licensed; the extension check is **not** a guarantee that an arbitrary model file is safe or functional. The verification report covers the installed local models; validate your own checkpoint and reference audio with a real speech request before relying on them.
 
 **Step 5: Use the New Voice**
 
@@ -491,7 +551,7 @@ curl -X POST http://localhost:9090/v1/audio/speech \
 ## TODO
 
 - [x] Expose an OpenAI-style `/v1/audio/speech` endpoint (not full OpenAI API compatibility)
-- [ ] Independently verify Docker/CUDA compatibility with an approval-gated clean build and licensed model
+- [x] Verify real GPU speech in Docker Desktop with installed v0/v1 checkpoints, non-streaming audio and sentence streaming; cold dependency installation remains unverified
 - [x] Multiple voice models
 - [x] Streaming endpoint for real-time voice agent pipelines
 - [ ] Add expression parsing for nuanced speech

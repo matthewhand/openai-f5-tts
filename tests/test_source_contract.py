@@ -77,7 +77,7 @@ class SourceContractTests(unittest.TestCase):
         readme = self.read("README.md")
         self.assertIn("CC-BY-NC", readme)
         self.assertIn("670900fd14e6c458b95da6e9ed317cdb20dbaf7a1c02ac06a05475a9d32b6a38", readme)
-        self.assertIn("experimental / alpha", readme.lower())
+        self.assertIn("community beta", readme.lower())
 
     def test_no_hosted_workflow_is_introduced(self):
         workflow_dir = ROOT / ".github" / "workflows"
