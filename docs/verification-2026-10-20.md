@@ -19,6 +19,11 @@ the existing local deployment with current wrapper source, rather than a cold
 dependency installation. Upstream dependencies are still unpinned in requirements.txt.
 Existing checkpoints and reference audio were used; none were uploaded to GitHub.
 
+**Scarlett is the author's own privately trained model, used here only for local
+verification. It is not distributed or available for download.** These results
+demonstrate support for a custom checkpoint; they do not offer that model or its
+reference audio to other users. Emilia uses the separately obtained upstream model.
+
 ## Real model results
 
 | Request | Result |
@@ -62,7 +67,7 @@ live port configuration was preserved.
 
 ## Multiple voices and remaining limits
 
-Both installed voices worked through both synthesis modes, in sequential requests.
+Both locally installed voices worked through both synthesis modes, in sequential requests.
 `MODEL_LOAD_LIMIT=1` keeps one voice checkpoint loaded and swaps it when the selected
 voice changes. More installed voices do not require more simultaneous loaded models.
 

@@ -67,14 +67,20 @@ audio rather than an MP3 file or server-sent events.
 **Multiple voices are selectable per request in both modes.** Each installed voice
 needs a checkpoint directory under `ckpts/<voice>/` and matching reference audio
 under `ref_audio/<voice>.<extension>`. Discover names with `GET /v1/voices`, then
-send the chosen name in the `voice` field. For example:
+send the chosen name in the `voice` field.
+
+The verification report references **Scarlett**, the author's privately trained
+model. It was used for local testing and **is not distributed or offered for
+download**. Its mention does not make it an available voice on another installation.
+Public examples below use Emilia, which requires the separately downloaded upstream
+checkpoint and matching reference audio described in the setup instructions.
 
 | Mode | Endpoint | JSON body |
 |---|---|---|
 | Complete audio file | `POST /v1/audio/speech` | `{"input":"Hello from Emilia.","voice":"Emilia","response_format":"mp3"}` |
-| Sentence streaming | `POST /v1/audio/speech/stream` | `{"input":"Hello from Scarlett. This is the next sentence.","voice":"Scarlett"}` |
+| Sentence streaming | `POST /v1/audio/speech/stream` | `{"input":"Hello from Emilia. This is the next sentence.","voice":"Emilia"}` |
 
-Either installed voice can be used with either endpoint. The timestamp route also
+Any correctly configured installed voice can be used with either endpoint. The timestamp route also
 selects its voice, in `POST /v1/text-to-speech/<voice>/with-timestamps`.
 
 `MODEL_LOAD_LIMIT` controls how many checkpoints remain loaded, **not** how many
