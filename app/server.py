@@ -9,11 +9,12 @@ from gevent.pywsgi import WSGIServer, WSGIHandler
 from dotenv import load_dotenv
 from argparse import ArgumentParser
 
-from tts_handler import TTSHandler
+# Validate authentication configuration before importing heavyweight TTS modules.
 from utils import require_api_key, AUDIO_FORMAT_MIME_TYPES, REQUIRE_API_KEY
+from tts_handler import TTSHandler
 from auth_bind_policy import validate_auth_bind
 from alignment import build_alignment
-from request_validation import parse_speech_request, parse_timestamp_request, RequestValidationError
+from request_validation import parse_speech_request, parse_timestamp_request, parse_stream_request, RequestValidationError
 from generation_gate import SynthesisBusyError
 from output_limits import read_audio_limited, AudioOutputTooLarge
 from pcm_contract import explicit_l16_accepted, pcm_le_to_l16
@@ -80,7 +81,7 @@ def log_request_info():
     if DEBUG_MODE:
         # Never log headers, URL query parameters or synthesis text: credentials
         # can arrive in either Authorization or xi-api-key, and text is private.
-        logging.debug('HTTP Request: %s %s', request.method, request.path)
+        logging.debug('HTTP request: method=%s endpoint=%s', request.method, request.endpoint or 'unmatched')
 
 # Initialize TTSHandler with CLI arguments and DEFAULT_VOICE
 tts_handler = TTSHandler(
@@ -140,10 +141,14 @@ def text_to_speech():
         return jsonify({"error": str(exc)}), 400
     text, voice = params["text"], params["voice"]
     response_format, speed = params["response_format"], params["speed"]
+    models = getattr(tts_handler, "available_models", None)
+    if isinstance(models, dict) and voice not in models:
+        return jsonify({"error": "Voice is not available"}), 400
 
     # Determine MIME type based on response format
+    # Raw file PCM is s16le, never big-endian RFC L16.
     mime_type = ("application/octet-stream" if response_format == "pcm"
-                 else AUDIO_FORMAT_MIME_TYPES.get(response_format.lower(), "audio/mpeg"))
+                 else AUDIO_FORMAT_MIME_TYPES.get(response_format, "audio/mpeg"))
 
     try:
         # Generate speech using TTSHandler and return the audio file
@@ -159,18 +164,18 @@ def text_to_speech():
         if response_format == "pcm":
             response.headers["X-Audio-Encoding"] = "s16le"
         return response
-    except ValueError as e:
-        logging.error(f"ValueError during TTS generation: {e}")
-        return jsonify({"error": str(e)}), 400
+    except ValueError:
+        logging.error("Speech generation backend rejected request")
+        return jsonify({"error": "Failed to generate speech"}), 500
     except AudioOutputTooLarge:
         return jsonify({"error": "Generated audio exceeds configured output limit"}), 503
     except SynthesisBusyError:
         return jsonify({"error": "Speech generator busy; try again later"}), 503
-    except RuntimeError as e:
-        logging.error(f"RuntimeError during TTS generation: {e}")
-        return jsonify({"error": str(e)}), 500
-    except Exception as e:
-        logging.error(f"Unhandled exception during TTS generation: {e}")
+    except RuntimeError:
+        logging.error("Speech generation runtime failed")
+        return jsonify({"error": "Failed to generate speech"}), 500
+    except Exception:
+        logging.error("Unexpected speech generation failure")
         return jsonify({"error": "Failed to generate speech"}), 500
 
 
@@ -193,12 +198,16 @@ def text_to_speech_with_timestamps(voice_id):
         return jsonify({"error": str(exc)}), 400
     text, voice = params["text"], params["voice"]
     response_format, speed = params["response_format"], params["speed"]
-    mime_type = AUDIO_FORMAT_MIME_TYPES.get(response_format.lower(), "audio/mpeg")
+    encoding_profile = params.get("encoding_profile")
+    models = getattr(tts_handler, "available_models", None)
+    if isinstance(models, dict) and voice not in models:
+        return jsonify({"error": "Voice is not available"}), 400
 
     try:
-        output_file_path = tts_handler.generate_speech(
-            text=text, voice=voice, response_format=response_format, speed=speed
-        )
+        options = dict(text=text, voice=voice, response_format=response_format, speed=speed)
+        if encoding_profile is not None:
+            options["encoding_profile"] = encoding_profile
+        output_file_path = tts_handler.generate_speech(**options)
         try:
             alignment, words, source = build_alignment(text, output_file_path)
             audio_b64 = base64.b64encode(
@@ -206,22 +215,25 @@ def text_to_speech_with_timestamps(voice_id):
             ).decode("ascii")
         finally:
             _delete_request_file(output_file_path)
-        return jsonify({
+        result = {
             "audio_base64": audio_b64,
             "alignment": alignment,
             "normalized_alignment": alignment,
             "words": words,
             "alignment_source": source,
-        })
+        }
+        if encoding_profile is not None:
+            result["encoding_profile"] = encoding_profile
+        return jsonify(result)
     except AudioOutputTooLarge:
         return jsonify({"error": "Generated audio exceeds configured output limit"}), 503
     except SynthesisBusyError:
         return jsonify({"error": "Speech generator busy; try again later"}), 503
-    except ValueError as e:
-        logging.error(f"ValueError during timestamped TTS: {e}")
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        logging.error(f"Unhandled exception during timestamped TTS: {e}")
+    except ValueError:
+        logging.error("Timestamped speech backend rejected request")
+        return jsonify({"error": "Failed to generate speech"}), 500
+    except Exception:
+        logging.error("Unexpected timestamped speech failure")
         return jsonify({"error": "Failed to generate speech"}), 500
 
 
@@ -269,39 +281,38 @@ def text_to_speech_stream():
     sentence is synthesised before headers are written so that model/reference
     failures also surface as a proper status code instead of an empty 200.
     """
-    data = request.get_json(silent=True)
-    if not isinstance(data, dict):
-        return jsonify({"error": "Request body must be a JSON object"}), 400
-
-    text = data.get('input')
-    if not isinstance(text, str) or not text.strip():
-        return jsonify({"error": "'input' must be a non-empty string"}), 400
-
-    voice = data.get('voice') or DEFAULT_VOICE
     try:
-        speed = float(data.get('speed', DEFAULT_SPEED))
-    except (TypeError, ValueError):
-        return jsonify({"error": "'speed' must be a number"}), 400
-    if not (MIN_SPEED <= speed <= MAX_SPEED):  # also rejects NaN
-        return jsonify({"error": f"'speed' must be between {MIN_SPEED} and {MAX_SPEED}"}), 400
+        params = parse_stream_request(
+            request.get_json(silent=True), default_voice=DEFAULT_VOICE,
+            default_speed=DEFAULT_SPEED, max_text_chars=MAX_TEXT_CHARS,
+        )
+    except RequestValidationError as exc:
+        return jsonify({"error": str(exc)}), 400
 
+    text, voice, speed = params["text"], params["voice"], params["speed"]
     if voice not in tts_handler.available_models:
-        return jsonify({"error": f"Voice '{voice}' is not available."}), 400
+        return jsonify({"error": "Voice is not available"}), 400
 
     l16 = explicit_l16_accepted(request.headers.get("Accept", ""))
     chunks = tts_handler.generate_speech_stream(text, voice, speed)
     try:
         first = next(chunks, None)
-        if first is not None and l16:
-            first = pcm_le_to_l16(first)
-    except ValueError as e:
-        chunks.close()  # Also release upstream resources on invalid L16 sample width.
-        logging.error(f"Stream ValueError: {e}")
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
+    except SynthesisBusyError:
         chunks.close()
-        logging.error(f"Stream failed before first audio chunk: {e}")
+        return jsonify({"error": "Speech generator busy; try again later"}), 503
+    except Exception:
+        chunks.close()
+        logging.error("Stream failed before first audio chunk")
         return jsonify({"error": "Failed to generate speech"}), 500
+    if first is None:
+        chunks.close()
+        return jsonify({"error": "Failed to generate speech"}), 500
+    if l16:
+        try:
+            first = pcm_le_to_l16(first)
+        except ValueError:
+            chunks.close()
+            return jsonify({"error": "Invalid audio sample width"}), 400
 
     environ = request.environ
 
@@ -319,8 +330,8 @@ def text_to_speech_stream():
                 if chunk is None:
                     break
                 yield pcm_le_to_l16(chunk) if l16 else chunk
-        except Exception as e:  # headers already sent: truncate cleanly, keep earlier audio
-            logging.error(f"Stream aborted mid-response: {e}")
+        except Exception:  # headers already sent: truncate cleanly, keep earlier audio
+            logging.error("Stream aborted mid-response")
         finally:
             chunks.close()  # client hung up or finished: stop any further GPU work
 
@@ -331,12 +342,18 @@ def text_to_speech_stream():
         'Cache-Control': 'no-store',
         'X-Accel-Buffering': 'no',  # stop nginx buffering the chunked response
     }
-    return Response(
+    response = Response(
         body(),
         content_type=(f'audio/L16; rate={STREAM_SAMPLE_RATE}; channels=1' if l16
                       else 'application/octet-stream'),
         headers=headers,
     )
+    # The first audio chunk was synthesized *before* constructing this WSGI
+    # response. If the server closes the iterable before calling next(body),
+    # body()'s finally block never runs; tie the already-acquired lease to
+    # Response.close() as well. Generator.close() is safe to call twice.
+    response.call_on_close(chunks.close)
+    return response
 
 
 @app.route('/v1/models', methods=['GET'])
@@ -405,7 +422,14 @@ def get_loaded_models():
 if __name__ == '__main__':
     logging.info(f"F5-TTS API running on http://localhost:{PORT}")
     # Start the server using Gevent WSGI server for better concurrency support
-    http_server = WSGIServer((args.host, PORT), app, handler_class=_SocketExposingHandler)
+    http_server = WSGIServer(
+        (args.host, PORT), app, handler_class=_SocketExposingHandler,
+        # Gevent access logs interpolate raw request URLs including voice IDs.
+        # Disable request and WSGI exception logs: upstream exceptions can
+        # embed confidential paths, text and credentials. Application routes
+        # emit safe fixed diagnostic messages instead.
+        log=None, error_log=None,
+    )
     try:
         http_server.serve_forever()
     except KeyboardInterrupt:

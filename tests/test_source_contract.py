@@ -44,21 +44,41 @@ class SourceContractTests(unittest.TestCase):
 
     def test_http_debug_does_not_log_request_bodies_or_secret_headers(self):
         server = self.read("app/server.py")
-        # PCM negotiation reads Accept; assert no logging statement interpolates headers.
+        # Reading Accept for explicit PCM negotiation is safe; logging its value is not.
         for node in ast.walk(ast.parse(server)):
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            if not isinstance(node, ast.Call):
                 continue
-            if not isinstance(node.func.value, ast.Name) or node.func.value.id != "logging":
+            if not isinstance(node.func, ast.Attribute) or not isinstance(node.func.value, ast.Name):
                 continue
-            for arg in node.args:
-                self.assertNotIn("request.headers", ast.unparse(arg))
-        self.assertNotIn("request.url", server)
+            if node.func.value.id != "logging":
+                continue
+            for argument in node.args:
+                for value in ast.walk(argument):
+                    if isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name):
+                        if value.value.id == "request":
+                            self.assertNotIn(value.attr, ("headers", "url", "path"))
+        self.assertNotIn("logging.debug('HTTP Request: %s %s'", server)
         self.assertNotIn("logging.debug(f\"Payload:", server)
         self.assertNotIn("logging.debug(f\"Headers:", server)
         handler = self.read("app/tts_handler.py")
         self.assertNotIn("text={text}", handler)
         self.assertNotIn("{gen_text}", handler)
         self.assertNotIn("Transcription result: {transcription}", handler)
+
+    def test_gevent_access_and_exception_logging_disabled(self):
+        # Gevent's default access log includes request URIs with private voices.
+        # WSGI exception output may include paths or sensitive exception data.
+        module = ast.parse(self.read("app/server.py"))
+        calls = [node for node in ast.walk(module)
+                 if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Name)
+                 and node.func.id == "WSGIServer"]
+        self.assertEqual(len(calls), 1)
+        settings = {kw.arg: kw.value for kw in calls[0].keywords}
+        for option in ("log", "error_log"):
+            self.assertIn(option, settings)
+            self.assertIsInstance(settings[option], ast.Constant)
+            self.assertIsNone(settings[option].value)
 
     def test_per_request_file_cleanup_has_no_global_after_request_race(self):
         server = self.read("app/server.py")
@@ -85,6 +105,44 @@ class SourceContractTests(unittest.TestCase):
         self.assertIn("CC-BY-NC", readme)
         self.assertIn("670900fd14e6c458b95da6e9ed317cdb20dbaf7a1c02ac06a05475a9d32b6a38", readme)
         self.assertIn("community beta", readme.lower())
+
+    def test_stream_client_l16_opt_in_converts_to_little_endian_wav(self):
+        """Exercise actual client with fictional HTTP and in-memory wave writer."""
+        import importlib.util
+        import sys
+        from unittest import mock
+        source = ROOT / "scripts" / "stream_client.py"
+        spec = importlib.util.spec_from_file_location("synthetic_stream_client", source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        requests, output = [], []
+        class FakeResponse:
+            status = 200
+            chunks = [b"\x01\x02\xff\xfe", b""]
+            def getheader(self, name, default=None):
+                return {"X-Sample-Rate": "16000",
+                        "X-Audio-Encoding": "s16be",
+                        "Content-Type": "audio/L16;rate=16000;channels=1"}.get(name, default)
+            def read1(self, count):
+                return self.chunks.pop(0)
+        class FakeConnection:
+            def __init__(self, *args, **kwargs): pass
+            def request(self, method, path, body, headers):
+                requests.append((method, path, headers))
+            def getresponse(self): return FakeResponse()
+        class FakeWave:
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def setnchannels(self, count): assert count == 1
+            def setsampwidth(self, width): assert width == 2
+            def setframerate(self, rate): assert rate == 16000
+            def writeframes(self, data): output.append(data)
+        with mock.patch.object(sys, "argv", ["stream_client.py", "--l16", "-o", "fictional.wav"]), \
+             mock.patch.object(module.http.client, "HTTPConnection", FakeConnection), \
+             mock.patch.object(module.wave, "open", return_value=FakeWave()):
+            module.main()
+        self.assertEqual(requests[0][2]["Accept"], "audio/L16")
+        self.assertEqual(output, [b"\x02\x01\xfe\xff"])
 
     def test_no_hosted_workflow_is_introduced(self):
         workflow_dir = ROOT / ".github" / "workflows"

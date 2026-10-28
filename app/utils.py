@@ -23,7 +23,16 @@ def getenv_bool(name: str, default: bool = False) -> bool:
     Returns:
         bool: The boolean value of the environment variable.
     """
-    return os.getenv(name, str(default)).lower() in ("yes", "y", "true", "1", "t")
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in ("yes", "y", "true", "1", "t"):
+        return True
+    if value in ("no", "n", "false", "0", "f"):
+        return False
+    # Do not silently turn a misspelled authentication setting into opt-out.
+    raise ValueError(f"Invalid boolean configuration for {name}")
 
 # Load API key and configuration for requiring API key from environment variables
 API_KEY = os.getenv('API_KEY', 'your_api_key_here')

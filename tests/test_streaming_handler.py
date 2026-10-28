@@ -25,6 +25,8 @@ def th(monkeypatch, tmp_path):
     monkeypatch.setenv("API_KEY", "k")
     for name in ("tts_handler", "utils"):
         sys.modules.pop(name, None)
+    from native_import_stubs import stub_native_backend
+    stub_native_backend(monkeypatch)
     mod = importlib.import_module("tts_handler")
 
     cache = tmp_path / "cache"
@@ -40,6 +42,8 @@ def th(monkeypatch, tmp_path):
     h.vocoder = object()
     h.disable_pcm_normalization = True
     h._ref_text_cache = {}  # normally created in __init__, which we bypass (no model loading)
+    from generation_gate import GenerationGate
+    h._generation_gate = GenerationGate()
 
     calls = SimpleNamespace(load=0, process=0, whisper=0, infer=[], amp=0.5)
     h._calls = calls
@@ -162,3 +166,13 @@ def test_sentence_splitter_needs_no_network(th, monkeypatch):
 
     monkeypatch.setattr(socket, "create_connection", boom)
     assert len(stream(th, "One a. Two b.")) == 2
+
+
+def test_native_upstream_print_symbol_discards_private_text(th, capsys):
+    """Upstream module-local print is inert; no global builtins mutation."""
+    upstream = sys.modules["f5_tts.infer.utils_infer"]
+    marker = "SYNTHETIC_PRIVATE_TRANSCRIPT_2958"
+    exec("def _synthetic_upstream_echo(value):\n    print(value)", upstream.__dict__)
+    upstream._synthetic_upstream_echo(marker)
+    assert marker not in capsys.readouterr().out
+    assert upstream.print is not print

@@ -7,6 +7,14 @@ import math
 
 SUPPORTED_RESPONSE_FORMATS = frozenset(("mp3", "wav", "flac", "aac", "opus", "pcm"))
 
+# Explicit opt-in encoder contracts. Historical numeric aliases remain codec-only.
+# (file format, output sample rate, encoder target bitrate, channels)
+STRICT_TIMESTAMP_PROFILES = {
+    "mp3_44100_128_strict": ("mp3", 44100, 128000, 1),
+    "ogg_48000_128_strict": ("opus", 48000, 128000, 1),
+    "wav_44100_pcm16_strict": ("wav", 44100, None, 1),
+}
+
 
 class RequestValidationError(ValueError):
     """Client-supplied request is invalid."""
@@ -61,24 +69,28 @@ def parse_timestamp_request(data, *, voice, default_format, default_speed, outpu
     if not isinstance(settings, dict):
         raise RequestValidationError("'voice_settings' must be a JSON object")
 
-    raw_format = output_format or data.get("response_format") or default_format
+    # Keep only verified historical aliases; arbitrary codec prefixes cannot
+    # become a different encoded format through silent fallback.
+    if output_format is not None:
+        raw_format = output_format
+    elif "response_format" in data:
+        raw_format = data["response_format"]
+    else:
+        raw_format = default_format
     if not isinstance(raw_format, str):
         raise RequestValidationError("Unsupported 'output_format'")
-    raw_format = raw_format.lower()
-    if raw_format == "pcm" or raw_format.startswith("wav"):
-        encoding = "wav"
-    elif raw_format.startswith("ogg") or raw_format.startswith("opus"):
-        encoding = "opus"
-    elif raw_format.startswith("flac"):
-        encoding = "flac"
-    elif raw_format.startswith("aac"):
-        encoding = "aac"
-    elif raw_format.startswith("mp3"):
-        encoding = "mp3"
-    else:
+    codecs = {
+        "mp3": "mp3", "wav": "wav", "flac": "flac",
+        "aac": "aac", "opus": "opus", "ogg": "opus", "pcm": "wav",
+        "wav_44100_128": "wav", "mp3_44100_128": "mp3",
+        "ogg_48000_128": "opus",
+    }
+    profile = raw_format.lower() if raw_format.lower() in STRICT_TIMESTAMP_PROFILES else None
+    encoding = STRICT_TIMESTAMP_PROFILES[profile][0] if profile else codecs.get(raw_format.lower())
+    if encoding is None:
         raise RequestValidationError("Unsupported 'output_format'")
 
-    return parse_speech_request(
+    params = parse_speech_request(
         {
             "input": text,
             "voice": voice,
@@ -89,4 +101,22 @@ def parse_timestamp_request(data, *, voice, default_format, default_speed, outpu
         default_format=encoding,
         default_speed=default_speed,
         max_text_chars=max_text_chars,
+    )
+    if profile is not None:
+        params["encoding_profile"] = profile
+    return params
+
+
+def parse_stream_request(data, *, default_voice, default_speed, max_text_chars=2000):
+    """Streaming always emits raw PCM; reuse the strict speech validator."""
+    if isinstance(data, dict):
+        if "output_format" in data:
+            raise RequestValidationError("Streaming does not accept 'output_format'")
+        if "response_format" in data:
+            fmt = data["response_format"]
+            if not isinstance(fmt, str) or fmt.lower() != "pcm":
+                raise RequestValidationError("Streaming supports only 'pcm' response_format")
+    return parse_speech_request(
+        data, default_voice=default_voice, default_format="pcm",
+        default_speed=default_speed, max_text_chars=max_text_chars,
     )

@@ -200,6 +200,61 @@ class RealFlaskAuthTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
 
 
+    def test_malformed_auth_setting_rejected_during_configuration_import(self):
+        for value in ("tru", "enabled", " ", "2"):
+            with self.subTest(value=value), mock.patch.dict(
+                    os.environ, {"API_KEY": SECRET, "REQUIRE_API_KEY": value}):
+                with self.assertRaisesRegex(ValueError, "Invalid boolean configuration"):
+                    import_source("f5_rejected_auth_utils", APP / "utils.py")
+
+    def test_backend_errors_are_sanitized_for_speech_and_timestamps(self):
+        sentinel = "SYNTHETIC_SECRET_PATH_TEXT_6789"
+        for error in (ValueError(sentinel), RuntimeError(sentinel)):
+            for url, payload in (
+                    ("/v1/audio/speech", {"input": "hello"}),
+                    ("/v1/text-to-speech/Emilia/with-timestamps", {"input": "hello"})):
+                with self.subTest(url=url, error=type(error).__name__), \
+                     mock.patch.object(self.fake_handler, "generate_speech", side_effect=error), \
+                     self.assertLogs(level="ERROR") as logs:
+                    response = self.client.post(url, json=payload,
+                                                headers={"Authorization": "Bearer " + SECRET})
+                self.assertEqual(response.status_code, 500)
+                self.assertEqual(response.get_json(), {"error": "Failed to generate speech"})
+                self.assertNotIn(sentinel, response.get_data(as_text=True))
+                self.assertNotIn(sentinel, " ".join(logs.output))
+
+    def test_stream_backend_error_is_sanitized_before_headers(self):
+        sentinel = "SYNTHETIC_SECRET_PATH_STREAM_6789"
+        def fail_stream(*args, **kwargs):
+            raise ValueError(sentinel)
+            yield b""  # must fail during first iteration
+        with mock.patch.object(self.fake_handler, "available_models", {"Emilia": True}, create=True), \
+             mock.patch.object(self.fake_handler, "generate_speech_stream", fail_stream, create=True), \
+             self.assertLogs(level="ERROR") as logs:
+            response = self.client.post("/v1/audio/speech/stream", json={"input": "hello"},
+                                        headers={"Authorization": "Bearer " + SECRET})
+        self.assertEqual(response.status_code, 500)
+        self.assertNotIn(sentinel, response.get_data(as_text=True))
+        self.assertNotIn(sentinel, " ".join(logs.output))
+
+
+    def test_debug_request_logging_excludes_voice_path_text_and_credentials(self):
+        voice = "PRIVATE_VOICE_IN_PATH_SENTINEL_14"
+        payload = "PRIVATE_REQUEST_TEXT_SENTINEL_26"
+        with mock.patch.object(self.server, "DEBUG_MODE", True), \
+             self.assertLogs(level="DEBUG") as logs:
+            response = self.client.post(
+                "/v1/text-to-speech/" + voice + "/with-timestamps",
+                json={"text": payload},
+                headers={"Authorization": "Bearer " + SECRET},
+            )
+        self.assertIn(response.status_code, (400, 503))
+        combined = " ".join(logs.output)
+        for marker in (voice, payload, SECRET):
+            self.assertNotIn(marker, combined)
+        self.assertIn("HTTP request: method=POST endpoint=text_to_speech_with_timestamps",
+                      combined)
+
     def _import_with_bind(self, host):
         """Import the actual server with fake model/gevent and auth disabled."""
         created = []

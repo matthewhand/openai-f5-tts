@@ -12,6 +12,7 @@ from collections import OrderedDict
 from gevent.lock import Semaphore
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 from f5_tts.model import DiT
+from f5_tts.infer import utils_infer as _upstream_infer_module
 from f5_tts.infer.utils_infer import (
     load_vocoder,
     load_model,
@@ -20,6 +21,7 @@ from f5_tts.infer.utils_infer import (
     remove_silence_for_generated_wav
 )
 from utils import AUDIO_FORMAT_MIME_TYPES
+from request_validation import STRICT_TIMESTAMP_PROFILES
 from generation_gate import GenerationGate
 from reference_paths import (
     INPUT_EXTENSIONS, UntrustedReferencePath, validate_reference_voice,
@@ -32,6 +34,17 @@ from checkpoint_paths import (
 )
 from sentences import split_sentences
 from model_config import model_config_for
+
+# The upstream F5-TTS helper prints reference transcriptions, generated text,
+# and checkpoint paths directly using its module-global ``print``. Shadow only
+# that module's print symbol (not builtins.print or process-wide stdout) so no
+# request text is retained or emitted by those direct Python-level statements.
+# Future upstream logger/fd-level output remains outside this guarantee.
+def _discard_upstream_print(*_args, **_kwargs):
+    return None
+
+
+_upstream_infer_module.print = _discard_upstream_print
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO)
@@ -92,12 +105,12 @@ class TTSHandler:
         """
         if not self.retain_cache:
             if os.path.exists(self.REF_AUDIO_CACHE_DIR):
-                logging.info(f"Deleting cache directory: {self.REF_AUDIO_CACHE_DIR}")
+                logging.info("Clearing reference audio cache")
                 shutil.rmtree(self.REF_AUDIO_CACHE_DIR)
             os.makedirs(self.REF_AUDIO_CACHE_DIR, exist_ok=True)
-            logging.info(f"Cache directory recreated: {self.REF_AUDIO_CACHE_DIR}")
+            logging.info("Reference audio cache recreated")
         else:
-            logging.info(f"Cache directory retained: {self.REF_AUDIO_CACHE_DIR}")
+            logging.info("Reference audio cache retained")
 
     def load_whisper_model(self):
         """Loads the Whisper model and processor."""
@@ -130,9 +143,9 @@ class TTSHandler:
                 break
             if model_path is not None:
                 self.available_models[folder] = model_path
-                logging.info("Discovered model for voice: %s", folder)
+                logging.info("Discovered eligible voice model")
             else:
-                logging.warning("No eligible native safetensors checkpoint for voice %r", folder)
+                logging.warning("Skipped voice directory without an eligible native checkpoint")
 
     def load_voice_model(self, voice_name):
         """
@@ -147,7 +160,7 @@ class TTSHandler:
         if voice_name in self.loaded_models:
             # Move to end to mark as recently used
             self.loaded_models.move_to_end(voice_name)
-            logging.info(f"Model for voice '{voice_name}' is already loaded.")
+            logging.info("Requested voice model already loaded")
             return self.loaded_models[voice_name]
 
         if voice_name not in self.available_models:
@@ -163,7 +176,7 @@ class TTSHandler:
         if len(self.loaded_models) >= self.MODEL_LOAD_LIMIT:
             # Unload the least recently used (LRU) model
             lru_model_name, lru_model = self.loaded_models.popitem(last=False)
-            logging.info("Evicting model: %s", lru_model_name)
+            logging.info("Evicting least recently used voice model")
             # The model was already removed from the LRU dictionary. Drop the
             # last local reference *before* allocating the replacement model.
             del lru_model
@@ -188,10 +201,10 @@ class TTSHandler:
                 if self.device.type == "cuda":
                     torch.cuda.empty_cache()
             except Exception:
-                logging.warning("Post-failure model allocator cleanup failed", exc_info=True)
+                logging.warning("Post-failure model allocator cleanup failed")
             raise
         self.loaded_models[voice_name] = model  # Add to loaded models (LRU order)
-        logging.info(f"Loaded model for voice: {voice_name}")
+        logging.info("Voice model loaded")
         return model
 
     def unload_voice_model(self, voice_name):
@@ -203,11 +216,11 @@ class TTSHandler:
         """
         if voice_name in self.loaded_models:
             del self.loaded_models[voice_name]
-            logging.info(f"Unloaded model for voice: {voice_name}")
+            logging.info("Voice model unloaded")
             gc.collect()
-            logging.info(f"Garbage collection triggered after unloading '{voice_name}'.")
+            logging.info("Garbage collection triggered after voice unload")
         else:
-            logging.info(f"Model for voice '{voice_name}' is not currently loaded.")
+            logging.info("Requested voice model is not loaded")
 
     def list_available_models(self):
         """
@@ -230,15 +243,15 @@ class TTSHandler:
         """
         default_voice = self.default_voice
         if default_voice not in self.available_models:
-            logging.error(f"Default voice '{default_voice}' not found in available models.")
+            logging.error("Default voice is not available")
             return
 
         if default_voice not in self.loaded_models and len(self.loaded_models) < self.MODEL_LOAD_LIMIT:
             try:
                 self.load_voice_model(default_voice)
-                logging.info(f"Loaded default '{default_voice}' model.")
+                logging.info("Default voice model loaded")
             except Exception as e:
-                logging.error(f"Failed to load default '{default_voice}' model: {e}")
+                logging.error("Failed to load default voice model")
 
     def get_ref_audio_path(self, voice_name):
         """
@@ -259,7 +272,7 @@ class TTSHandler:
             ref_audio_path = os.path.join(self.REF_AUDIO_DIR, f"{voice_name}{ext}")
             if os.path.lexists(ref_audio_path):
                 validate_reference_input(self.REF_AUDIO_DIR, voice_name, ref_audio_path)
-                logging.info("Found reference audio for voice %r", voice_name)
+                logging.info("Reference audio file found")
                 return ref_audio_path
         raise FileNotFoundError(f"No reference audio file found for voice '{voice_name}' in {self.REF_AUDIO_DIR}")
 
@@ -276,13 +289,14 @@ class TTSHandler:
         validate_reference_voice(voice_name)
         try:
             ref_audio_path = self.get_ref_audio_path(voice_name)
-        except FileNotFoundError as e:
-            logging.error(e)
+        except FileNotFoundError:
+            # Exceptions can embed a private reference path and voice identity.
+            logging.error("Reference audio file is unavailable")
             raise
         # Recheck even if the first lookup happened before an external rename.
         validate_reference_input(self.REF_AUDIO_DIR, voice_name, ref_audio_path)
         validate_reference_root(self.REF_AUDIO_CACHE_DIR)
-        logging.info("Processing reference audio for voice %r", voice_name)
+        logging.info("Processing reference audio")
 
         cached_audio_path = os.path.join(self.REF_AUDIO_CACHE_DIR, f"{voice_name}_processed.wav")
         temp_pcm_path = os.path.join(self.REF_AUDIO_CACHE_DIR, f"{voice_name}_processed.pcm")
@@ -294,7 +308,7 @@ class TTSHandler:
             require_missing_cache_intermediate(
                 self.REF_AUDIO_CACHE_DIR, voice_name, temp_pcm_path
             )
-            logging.info("Processing reference audio for voice %r into cache", voice_name)
+            logging.info("Processing reference audio into cache")
             try:
                 validate_reference_input(self.REF_AUDIO_DIR, voice_name, ref_audio_path)
                 validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
@@ -374,7 +388,7 @@ class TTSHandler:
                                  cached_audio_path, "wav")
         try:
             audio_input, sample_rate = sf.read(cached_audio_path)
-            logging.debug(f"Processed audio loaded: {cached_audio_path} with sample rate {sample_rate}")
+            logging.debug("Processed reference audio loaded at %s Hz", sample_rate)
 
             # Ensure sample rate matches 16kHz
             if sample_rate != 16000:
@@ -407,17 +421,17 @@ class TTSHandler:
         """
         cached = getattr(self, "_ref_text_cache", None)
         if cached is not None and voice_name in cached:
-            logging.debug(f"Using cached transcription for voice '{voice_name}'.")
+            logging.debug("Using cached reference transcription")
             return cached[voice_name]
 
-        logging.info(f"Transcribing reference audio for voice '{voice_name}'...")
+        logging.info("Transcribing reference audio")
         processed_audio_path = self.process_reference_audio(voice_name)
 
         # Revalidate after processing, before Whisper reads the pathname.
         validate_reference_cache(self.REF_AUDIO_CACHE_DIR, voice_name,
                                  processed_audio_path, "wav")
         audio_input, sample_rate = sf.read(processed_audio_path)
-        logging.debug(f"Processed audio loaded: {processed_audio_path} with sample rate {sample_rate}")
+        logging.debug("Processed audio for transcription loaded at %s Hz", sample_rate)
 
         inputs = self.processor(audio_input, sampling_rate=16000, return_tensors="pt").input_features.to(self.device)
 
@@ -445,35 +459,38 @@ class TTSHandler:
             tuple: (sample_rate, audio_data)
         """
         try:
-            logging.debug("Generating speech for voice %r (%d text characters)", voice_name, len(gen_text))
+            logging.debug("Generating speech for %d text characters", len(gen_text))
             ref_text = self.transcribe_audio(voice_name)
 
             ref_audio_path = self.process_reference_audio(voice_name)
 
             if ref_audio_path and os.path.exists(ref_audio_path):
-                logging.info(f"Using reference audio for voice '{voice_name}': {ref_audio_path}")
+                logging.info("Using reference audio for inference")
                 final_wave, final_sample_rate, _ = infer_process(
-                    ref_audio_path, ref_text, gen_text, model, self.vocoder, cross_fade_duration=0.15, speed=speed
+                    ref_audio_path, ref_text, gen_text, model, self.vocoder, cross_fade_duration=0.15, speed=speed, show_info=lambda *_args, **_kwargs: None
                 )
             else:
-                logging.info(f"No reference audio found for voice '{voice_name}'. Proceeding without it.")
+                logging.info("Proceeding without reference audio")
                 final_wave, final_sample_rate, _ = infer_process(
-                    None, ref_text, gen_text, model, self.vocoder, cross_fade_duration=0.15, speed=speed
+                    None, ref_text, gen_text, model, self.vocoder, cross_fade_duration=0.15, speed=speed, show_info=lambda *_args, **_kwargs: None
                 )
             logging.debug(f"Generated waveform shape: {final_wave.shape}")
             return final_sample_rate, final_wave.squeeze().cpu().numpy() if isinstance(final_wave, torch.Tensor) else final_wave.squeeze()
         except Exception as e:
-            logging.error(f"Error during inference process: {e}")
+            logging.error("Native speech inference failed")
             raise RuntimeError("Failed to generate speech.")
 
-    def generate_speech(self, text, voice='Emilia', response_format='mp3', speed=1.0):
+    def generate_speech(self, text, voice='Emilia', response_format='mp3', speed=1.0,
+                        encoding_profile=None):
         """Fail fast if a process-local synthesis request is already active."""
         with self._generation_gate.claim():
-            return self._generate_speech_claimed(
-                text, voice=voice, response_format=response_format, speed=speed
-            )
+            options = dict(voice=voice, response_format=response_format, speed=speed)
+            if encoding_profile is not None:
+                options["encoding_profile"] = encoding_profile
+            return self._generate_speech_claimed(text, **options)
 
-    def _generate_speech_claimed(self, text, voice='Emilia', response_format='mp3', speed=1.0):
+    def _generate_speech_claimed(self, text, voice='Emilia', response_format='mp3', speed=1.0,
+                                 encoding_profile=None):
         """
         Generates and saves speech audio from text for a specific voice.
 
@@ -486,32 +503,37 @@ class TTSHandler:
         Returns:
             str: Path to the generated audio file.
         """
-        logging.debug("generate_speech request: voice=%r format=%r speed=%s characters=%d", voice, response_format, speed, len(text) if isinstance(text, str) else 0)
+        logging.debug("generate_speech request: format=%r speed=%s characters=%d", response_format, speed, len(text) if isinstance(text, str) else 0)
 
         if not text:
             logging.error("No text available for TTS generation.")
             raise ValueError("No text available for TTS generation.")
 
         if voice not in self.available_models:
-            logging.error(f"Requested voice '{voice}' not found in available voices: {list(self.available_models.keys())}")
+            logging.error("Requested voice is unavailable")
             raise ValueError(f"Voice '{voice}' is not available.")
 
         try:
             # Load the requested voice model (prioritize this model)
             with self._inference_lock:
                 model = self.load_voice_model(voice)
-                logging.info("Using model for voice: %s", voice)
+                logging.info("Using requested voice model")
                 # The shared cache is not safe across concurrent inference/model swaps.
                 sample_rate, audio_data = self.infer(text, voice, model, speed=speed)
             
-            output_path = self._write_audio_file(sample_rate, audio_data, response_format)
-            logging.info("Generated speech audio for voice %s", voice)
+            if encoding_profile is None:
+                output_path = self._write_audio_file(sample_rate, audio_data, response_format)
+            else:
+                output_path = self._write_audio_file(
+                    sample_rate, audio_data, response_format, encoding_profile=encoding_profile
+                )
+            logging.info("Generated speech audio")
             return output_path
         except Exception as e:
-            logging.error(f"Error in generate_speech: {e}")
+            logging.error("Speech generation backend failed")
             raise RuntimeError("Failed to generate speech.")
     
-    def _write_audio_file(self, sample_rate, audio_data, response_format):
+    def _write_audio_file(self, sample_rate, audio_data, response_format, encoding_profile=None):
         """Encode one request, removing partial WAV and converted files on any error.
 
         Each temporary file is closed before another library opens it, including
@@ -521,6 +543,11 @@ class TTSHandler:
         fmt = response_format.lower()
         if fmt not in AUDIO_FORMAT_MIME_TYPES:
             raise ValueError("Unsupported response format")
+        profile = None
+        if encoding_profile is not None:
+            profile = STRICT_TIMESTAMP_PROFILES.get(encoding_profile)
+            if profile is None or profile[0] != fmt:
+                raise ValueError("Unsupported encoding profile")
         wav_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
         wav_path = wav_tmp.name
         wav_tmp.close()
@@ -528,15 +555,25 @@ class TTSHandler:
         retained_path = None
         try:
             sf.write(wav_path, audio_data, sample_rate)
-            if fmt == "wav":
+            if fmt == "wav" and profile is None:
                 retained_path = wav_path
             else:
                 out_tmp = tempfile.NamedTemporaryFile(delete=False, suffix="." + fmt)
                 converted_path = out_tmp.name
                 out_tmp.close()
                 command = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-nostats", "-y", "-i", wav_path, "-c:a", self._get_ffmpeg_codec(fmt)]
-                # Raw PCM has no container header, so ffmpeg needs an explicit muxer.
-                if fmt == "pcm":
+                # Apply exact opt-in sample rate, channel count and encoder target.
+                # Opus uses constant-bit-rate mode; container bitrate can include overhead.
+                if profile is not None:
+                    _, rate, bitrate, channels = profile
+                    command.extend(["-ar", str(rate), "-ac", str(channels)])
+                    if bitrate is not None:
+                        command.extend(["-b:a", str(bitrate)])
+                    if fmt == "opus":
+                        command.extend(["-vbr", "off"])
+                    command.extend(["-f", {"mp3": "mp3", "opus": "ogg", "wav": "wav"}[fmt]])
+                elif fmt == "pcm":
+                    # Raw PCM has no container header, so select its LE muxer.
                     command.extend(["-f", "s16le"])
                 command.append(converted_path)
                 subprocess.run(
@@ -583,35 +620,38 @@ class TTSHandler:
         Yields:
             bytes: Raw int16 little-endian PCM audio at 16 kHz, one chunk per sentence.
         """
-        if not text:
-            raise ValueError("No text provided for TTS generation.")
-        if voice not in self.available_models:
-            raise ValueError(f"Voice '{voice}' is not available.")
+        # Retain the one process-local lease from model selection through the
+        # last yielded PCM chunk; generator.close() releases it on disconnect.
+        with self._generation_gate.claim():
+            if not text:
+                raise ValueError("No text provided for TTS generation.")
+            if voice not in self.available_models:
+                raise ValueError(f"Voice '{voice}' is not available.")
 
-        model = self.load_voice_model(voice)
-        ref_text = self.transcribe_audio(voice)
-        ref_audio_path = self.process_reference_audio(voice)
+            model = self.load_voice_model(voice)
+            ref_text = self.transcribe_audio(voice)
+            ref_audio_path = self.process_reference_audio(voice)
 
-        sentences = split_sentences(text)
-        logging.info(f"Streaming {len(sentences)} sentence(s) for voice '{voice}'.")
+            sentences = split_sentences(text)
+            logging.info("Streaming %d sentences", len(sentences))
 
-        try:
-            for sentence in sentences:
-                sentence = sentence.strip()
-                if not sentence:
-                    continue
-                logging.debug(f"Synthesising sentence: {sentence}")
-                final_wave, final_sample_rate, _ = infer_process(
-                    ref_audio_path, ref_text, sentence, model, self.vocoder,
-                    cross_fade_duration=0.15, speed=speed
-                )
-                audio = final_wave.squeeze().cpu().numpy() if isinstance(final_wave, torch.Tensor) else final_wave.squeeze()
+            try:
+                for sentence in sentences:
+                    sentence = sentence.strip()
+                    if not sentence:
+                        continue
+                    logging.debug("Synthesising streamed sentence")
+                    final_wave, final_sample_rate, _ = infer_process(
+                        ref_audio_path, ref_text, sentence, model, self.vocoder,
+                        cross_fade_duration=0.15, speed=speed, show_info=lambda *_args, **_kwargs: None
+                    )
+                    audio = final_wave.squeeze().cpu().numpy() if isinstance(final_wave, torch.Tensor) else final_wave.squeeze()
 
-                if final_sample_rate != 16000:
-                    audio = librosa.resample(audio, orig_sr=final_sample_rate, target_sr=16000)
+                    if final_sample_rate != 16000:
+                        audio = librosa.resample(audio, orig_sr=final_sample_rate, target_sr=16000)
 
-                pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2")
-                yield pcm.tobytes()
-        except GeneratorExit:
-            logging.info(f"Client disconnected — stopping stream for voice '{voice}'.")
-            raise
+                    pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2")
+                    yield pcm.tobytes()
+            except GeneratorExit:
+                logging.info("Client disconnected; stopping stream")
+                raise
