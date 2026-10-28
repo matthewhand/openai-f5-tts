@@ -89,11 +89,12 @@ the previous checkpoint and loads the requested one. A larger limit can keep mor
 voices warm if GPU memory permits, but does not enable safe simultaneous synthesis.
 Whisper, the vocoder and inference workspace also use memory.
 
-Use one synthesis request at a time across both modes. Ordinary synthesis and
-timestamp requests use a process-local generation gate; streaming currently does
-not share that gate, so overlapping streams or voice switches must not be assumed
-safe. For an application that needs parallel voice jobs, use an application queue
-or isolated service instances, with separate model caches and sufficient GPU memory.
+Use one synthesis request at a time across both modes. Ordinary, timestamped and
+streaming synthesis now share a process-local generation gate; competing requests
+return HTTP 503. Streaming keeps its lease through delivery and closes it on a
+WSGI response close or disconnect (synthetic regression verified). This is **not**
+a multi-process or distributed GPU lock. For parallel voice jobs, use an application
+queue or isolated service instances with separately managed model caches.
 
 ## Current implementation and limitations
 
@@ -104,7 +105,7 @@ or isolated service instances, with separate model caches and sufficient GPU mem
 - The Compose setup currently requires NVIDIA GPU container support and mounts local checkpoint and reference-audio folders. The installer pulls an **unpinned** upstream F5-TTS dependency; reproducible builds have not been demonstrated.
 - **Checkpoint path-trust guard (source-only verified):** discovery now checks that the configured checkpoint root and its ancestors are not symlinks, and that voice directories and selected `.safetensors` files are real directories / singly linked regular files, not symlinks or hardlinks. Immediately before loading a previously discovered voice, the path is checked again **before any loaded model is evicted**. A stale or substituted path fails without invoking the model loader. Keep the checkpoint tree trusted and immutable to less-privileged writers: pathname checks cannot eliminate **replacement races** between validation and the upstream loader opening the file. This does **not** prove file authenticity, content format, signature, integrity, permission confinement or licensing. Checkpoint-substitution attacks during live inference and Windows-native path behavior remain unverified; ordinary Docker inference is covered by the verification report.
 - **Checkpoint loading is native-safetensors-only.** The wrapper discovers `model_1250000.safetensors` first, or `model_1200000.safetensors`; it does **not** deserialize or automatically convert legacy pickle-based `.pt` files. Users with only `.pt` checkpoints must obtain a genuine `.safetensors` export from a trusted offline training/export environment before using this branch. Do not simply rename a `.pt` file.
-- Incoming JSON request bodies are bounded by `MAX_REQUEST_BYTES` (default 65536). Ordinary synthesis and timestamp requests additionally enforce `MAX_TEXT_CHARS` (default 2000); speed must be between 0.25 and 4. Their **process-local, non-blocking single-generation gate** covers model inference and audio conversion and raises HTTP **503** when occupied. Streaming does not currently share that gate or the character-limit validator. This is not a cross-process or cluster-wide limit. Wrapper HTTP/body/credential debug logging has been removed, but upstream inference libraries can still print generated text; their logs are not independently sanitized.
+- Incoming JSON request bodies are bounded by `MAX_REQUEST_BYTES` (default 65536). Ordinary synthesis and timestamp requests additionally enforce `MAX_TEXT_CHARS` (default 2000); speed must be between 0.25 and 4. Their **process-local, non-blocking single-generation gate** covers model inference and audio conversion and raises HTTP **503** when occupied. Streaming now shares that gate and character-limit validator (synthetic offline tested). This is not a cross-process or cluster-wide limit. Wrapper HTTP/body/credential debug logging has been removed and Gevent request/exception access logging is configured off. Direct Python `print` output in the imported upstream F5-TTS inference module is discarded by a module-local print override, including its known reference-text, generated-text and checkpoint-path statements. This does not sanitize native file-descriptor writes, third-party logger handlers, future upstream changes or fronting reverse-proxy logs; those require separate operational controls and review after dependency updates.
 - The Python wrapper is MIT-licensed. **Upstream pretrained F5-TTS model weights are CC-BY-NC** per [SWivid/F5-TTS licensing](https://github.com/SWivid/F5-TTS#license); this repository's MIT license does not grant commercial rights to those weights. Check any reference-audio and voice rights separately.
 
 
@@ -129,7 +130,7 @@ or isolated service instances, with separate model caches and sufficient GPU mem
 
 ### Concurrency and temporary-file status
 
-Ordinary synthesis and timestamp requests have a process-local generation gate. Streaming currently bypasses that gate; use sequential requests across all synthesis endpoints. A separate request-owned encoder removes partial WAV/converted files after success or failure; deterministic mock-backed regressions exercise both paths. The Python server still has **no cross-process admission mechanism**, no proved scheduling fairness and no model-backed concurrent load measurements. Avoid multiple workers or exposing the API on untrusted networks until an independent release review.
+Ordinary synthesis, timestamp requests and streaming share one process-local generation gate; use sequential requests across all synthesis endpoints unless you explicitly handle 503 contention. A separate request-owned encoder removes partial WAV/converted files after success or failure; deterministic mock-backed regressions exercise both paths. The Python server still has **no cross-process admission mechanism**, no proved scheduling fairness and no model-backed concurrent load measurements. Avoid multiple workers or exposing the API on untrusted networks until an independent release review.
 
 ## Prerequisites
 
@@ -373,7 +374,7 @@ Primary route for generating speech from text input. With the default `REQUIRE_A
   - `speed` (number, optional): Between `0.25` and `4` inclusive; defaults to `DEFAULT_SPEED` (`1.0` unless configured otherwise).
   - `ref_audio`: **Not implemented as a per-request override.** Reference audio is resolved from the voice name under `ref_audio/`; omitting this field is recommended.
 
-- **Response**: An audio file in the specified format. For `response_format: "pcm"`, the file contains raw little-endian PCM16 with `Content-Type: application/octet-stream` and `X-Audio-Encoding: s16le` (no WAV header or sample-rate metadata).
+- **Response**: An audio file in the specified format. For `pcm` the payload is raw little-endian signed 16-bit PCM (`application/octet-stream`, `X-Audio-Encoding: s16le`); the non-streaming sample rate follows the inference output rather than a guaranteed 16 kHz. The raw payload has no container or sample-rate metadata.
 
 **Example:**
 
@@ -400,11 +401,12 @@ The input text is split into sentences by a small built-in splitter (no NLTK and
   - `voice` (string, optional): Voice model to use (default: `Emilia`).
   - `speed` (float, optional): Speed factor (default: `1.0`).
 - **Response**:
-  - **Default:** `Content-Type: application/octet-stream`, `X-Audio-Encoding: s16le`; body remains raw little-endian signed PCM16 at 16 kHz.
-  - **Explicit opt-in:** send `Accept: audio/L16` for genuine network-order big-endian signed PCM16 and `Content-Type: audio/L16; rate=16000; channels=1`, `X-Audio-Encoding: s16be`.
-  - Both modes include `X-Sample-Rate: 16000` and `X-Audio-Channels: 1`. Each sentence contributes a chunk.
+  - **Default:** `Content-Type: application/octet-stream`, `X-Audio-Encoding: s16le`.
+  - **Explicit opt-in:** send `Accept: audio/L16` to receive network-order big-endian L16 and `Content-Type: audio/L16; rate=16000; channels=1`, `X-Audio-Encoding: s16be`.
+  - Both modes: `X-Sample-Rate: 16000`, `X-Audio-Channels: 1`.
+  - Body: raw signed int16 PCM, one chunk per sentence, with the requested byte order.
 
-**MIME migration:** Previously this endpoint returned little-endian PCM while incorrectly labeling it `audio/L16`. Existing little-endian payload bytes are preserved by default, but the default media type changes; clients that relied on the incorrect header must adjust. `Accept: */*` does not opt into L16. Use `python scripts/stream_client.py --l16` to request correctly encoded big-endian L16 and convert to little-endian WAV. Without the flag, the client retains original little-endian playback.
+**Migration from the historic stream:** The earlier response advertised `audio/L16` while actually sending little-endian PCM. The default body bytes are unchanged; only its MIME/encoding headers are corrected. Clients relying on the *old MIME label* must update their header handling. Wildcard `Accept: */*` does **not** request big-endian; only an explicit positive `audio/L16` media range does. Clients that want L16 must decode big-endian samples or convert them to little-endian before creating a WAV file. `scripts/stream_client.py --l16` demonstrates this; without the flag it retains default legacy-byte playback.
 
 ```bash
 curl -X POST http://localhost:9090/v1/audio/speech/stream \
@@ -439,6 +441,16 @@ Lists names of discovered voices. Language metadata and actual language filterin
 ### `/v1/text-to-speech/{voice}/with-timestamps`
 
 Optional ElevenLabs-shaped route (not a promise of ElevenLabs interoperability): authenticated POST with `{"text":"Hello"}` (or `input`), and the voice in the URL. The response contains `audio_base64`, `alignment`, `normalized_alignment`, `words` and `alignment_source`. Timing is either `duration_weighted` estimated from text and audio duration, or `unavailable` with null alignment. **No forced aligner is currently connected**, even if WhisperX is installed.
+
+**Timestamp audio output formats:** `output_format` query parameter takes priority over body `response_format`. The legacy names `mp3_44100_128`, `ogg_48000_128` and `wav_44100_128` remain accepted **as codec selectors only** (MP3, Ogg/Opus and WAV, respectively); their numerical suffixes do not enforce sample rate or bitrate. Use the explicit opt-in strict names below for enforced encoder settings:
+
+| Strict output_format | Encoder contract |
+|---|---|
+| `mp3_44100_128_strict` | MP3, 44.1 kHz mono, 128 kbps nominal CBR |
+| `ogg_48000_128_strict` | Ogg Opus, 48 kHz mono, 128 kbps constant codec target (container overhead excluded) |
+| `wav_44100_pcm16_strict` | WAV, 44.1 kHz mono signed PCM16; uncompressed audio is 705.6 kbps, not 128 kbps |
+
+The strict names add an `encoding_profile` field to the timestamp response. Unknown strict aliases return HTTP 400. Exact measured container bitrate can differ from encoder nominal bitrate; use media inspection for verification. Ordinary `mp3`, `wav`, `ogg` etc. and existing legacy aliases retain their previous behavior; no implicit profile change is performed.
 
 ### `/v1/voices/all`
 

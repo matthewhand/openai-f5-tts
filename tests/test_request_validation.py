@@ -9,6 +9,7 @@ from request_validation import (
     RequestValidationError,
     parse_speech_request,
     parse_timestamp_request,
+    parse_stream_request,
 )
 
 DEFAULTS = dict(default_voice="Emilia", default_format="mp3", default_speed=1.0)
@@ -61,6 +62,24 @@ class SpeechValidationTests(unittest.TestCase):
         for fmt in ("mp3", "wav", "flac", "aac", "opus", "pcm"):
             self.assertEqual(self.parse({"input": "ok", "response_format": fmt})["response_format"], fmt)
 
+    def test_stream_uses_bounded_speech_contract_and_pcm_only(self):
+        def parse(data):
+            return parse_stream_request(data, default_voice="Emilia", default_speed=1.0,
+                                        max_text_chars=5)
+        self.assertEqual(parse({"input": "hello", "speed": "1.25", "response_format": "PCM"}),
+                         {"text": "hello", "voice": "Emilia", "response_format": "pcm", "speed": 1.25})
+        for invalid in (None, [], {}, {"input": ""}, {"input": "sixsix"},
+                        {"input": "hello", "voice": []},
+                        {"input": "hello", "speed": True},
+                        {"input": "hello", "speed": float("nan")},
+                        {"input": "hello", "speed": float("inf")},
+                        {"input": "hello", "speed": 0},
+                        {"input": "hello", "response_format": "wav"},
+                        {"input": "hello", "output_format": "mp3"}):
+            with self.subTest(invalid=str(invalid)[:30]):
+                with self.assertRaises(RequestValidationError):
+                    parse(invalid)
+
     def test_timestamp_request_is_strict_and_maps_formats(self):
         for specified, expected in (("wav_44100_128", "wav"),
                                     ("mp3_44100_128", "mp3"),
@@ -71,10 +90,41 @@ class SpeechValidationTests(unittest.TestCase):
                          voice="Emilia", output_format=specified, default_format="mp3", default_speed=1.0)
                 self.assertEqual((p["response_format"], p["speed"]), (expected, 1.25))
 
+    def test_strict_timestamp_profiles_opt_in_without_changing_legacy_aliases(self):
+        profiles = (
+            ("mp3_44100_128_strict", "mp3"),
+            ("ogg_48000_128_strict", "opus"),
+            ("wav_44100_pcm16_strict", "wav"),
+        )
+        for alias, codec in profiles:
+            with self.subTest(profile=alias):
+                p = parse_timestamp_request({"text": "hello"}, voice="Emilia",
+                                            default_format="mp3", default_speed=1.0,
+                                            output_format=alias)
+                self.assertEqual(p["response_format"], codec)
+                self.assertEqual(p["encoding_profile"], alias)
+        for alias, codec in (("mp3_44100_128", "mp3"),
+                             ("ogg_48000_128", "opus"),
+                             ("wav_44100_128", "wav")):
+            p = parse_timestamp_request({"text": "hello"}, voice="Emilia",
+                                        default_format="mp3", default_speed=1.0,
+                                        output_format=alias)
+            self.assertEqual(p["response_format"], codec)
+            self.assertNotIn("encoding_profile", p)
+        for alias in ("wav_44100_128_strict", "mp3_48000_128_strict"):
+            with self.assertRaises(RequestValidationError):
+                parse_timestamp_request({"text": "hello"}, voice="Emilia",
+                                        default_format="mp3", default_speed=1.0,
+                                        output_format=alias)
+
     def test_timestamp_bad_formats_and_settings(self):
         for data, fmt in (({"text": "hello", "voice_settings": []}, None),
                           ({"text": "hello"}, "unknown"),
-                          ({"text": ""}, None)):
+                          ({"text": ""}, None),
+                          ({"text": "hello"}, "mp3malicious"),
+                          ({"text": "hello"}, "opus_invalid"),
+                          ({"text": "hello", "response_format": None}, None),
+                          ({"text": "hello", "response_format": ""}, None)):
             with self.subTest(data=data, fmt=fmt):
                 with self.assertRaises(RequestValidationError):
                     parse_timestamp_request(data, voice="Emilia", output_format=fmt,

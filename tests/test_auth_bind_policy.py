@@ -1,5 +1,7 @@
 """Synthetic startup bind-policy tests: no Flask, sockets, DNS or models."""
 import ast
+import os
+from unittest import mock
 from pathlib import Path
 import sys
 import unittest
@@ -31,6 +33,34 @@ class AuthBindPolicyTests(unittest.TestCase):
         for host in ("0.0.0.0", "::", "localhost", "192.168.1.20", "127.0.0.1"):
             with self.subTest(host=host):
                 self.assertIsNone(validate_auth_bind(host, True))
+
+    def test_auth_boolean_parser_rejects_typos_instead_of_disabling_auth(self):
+        module = ast.parse((ROOT / "app" / "utils.py").read_text())
+        function = next(node for node in module.body
+                        if isinstance(node, ast.FunctionDef) and node.name == "getenv_bool")
+        namespace = {"os": os}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "app/utils.py", "exec"), namespace)
+        parse = namespace["getenv_bool"]
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(parse("REQUIRE_API_KEY", True))
+            self.assertFalse(parse("REQUIRE_API_KEY", False))
+        for value in ("true", "T", "yes", "Y", "1", " true "):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"REQUIRE_API_KEY": value}):
+                self.assertTrue(parse("REQUIRE_API_KEY", True))
+        for value in ("false", "F", "no", "N", "0", " false "):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"REQUIRE_API_KEY": value}):
+                self.assertFalse(parse("REQUIRE_API_KEY", True))
+        for value in ("tru", "enabled", "2", "", " ", "off", "yes please"):
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"REQUIRE_API_KEY": value}):
+                with self.assertRaisesRegex(ValueError, "Invalid boolean configuration") as exc:
+                    parse("REQUIRE_API_KEY", True)
+                self.assertNotIn(value.strip(), str(exc.exception)) if value.strip() else self.assertNotIn("[secret]", str(exc.exception))
+
+    def test_server_parses_auth_before_importing_heavy_tts_dependencies(self):
+        module = ast.parse((ROOT / "app" / "server.py").read_text())
+        indices = {node.module: index for index, node in enumerate(module.body)
+                   if isinstance(node, ast.ImportFrom)}
+        self.assertLess(indices["utils"], indices["tts_handler"])
 
     def test_server_checks_bind_before_model_handler_is_constructed(self):
         module = ast.parse((ROOT / "app" / "server.py").read_text(encoding="utf-8"))

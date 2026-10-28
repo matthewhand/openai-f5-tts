@@ -55,6 +55,8 @@ def test_handler_passes_per_voice_config_to_f5(monkeypatch, tmp_path):
     monkeypatch.setenv("API_KEY", "k")
     for n in ("tts_handler", "utils"):
         sys.modules.pop(n, None)
+    from native_import_stubs import stub_native_backend
+    stub_native_backend(monkeypatch)
     mod = importlib.import_module("tts_handler")
     root = tmp_path / "ckpts"
     names = {"Emilia": "model_1250000.safetensors", "V0": "model_1200000.safetensors"}
