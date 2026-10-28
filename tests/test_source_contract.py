@@ -44,7 +44,14 @@ class SourceContractTests(unittest.TestCase):
 
     def test_http_debug_does_not_log_request_bodies_or_secret_headers(self):
         server = self.read("app/server.py")
-        self.assertNotIn("request.headers", server)
+        # PCM negotiation reads Accept; assert no logging statement interpolates headers.
+        for node in ast.walk(ast.parse(server)):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if not isinstance(node.func.value, ast.Name) or node.func.value.id != "logging":
+                continue
+            for arg in node.args:
+                self.assertNotIn("request.headers", ast.unparse(arg))
         self.assertNotIn("request.url", server)
         self.assertNotIn("logging.debug(f\"Payload:", server)
         self.assertNotIn("logging.debug(f\"Headers:", server)

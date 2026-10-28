@@ -16,6 +16,7 @@ from alignment import build_alignment
 from request_validation import parse_speech_request, parse_timestamp_request, RequestValidationError
 from generation_gate import SynthesisBusyError
 from output_limits import read_audio_limited, AudioOutputTooLarge
+from pcm_contract import explicit_l16_accepted, pcm_le_to_l16
 
 # Initialize Flask app and load environment variables
 app = Flask(__name__)
@@ -141,7 +142,8 @@ def text_to_speech():
     response_format, speed = params["response_format"], params["speed"]
 
     # Determine MIME type based on response format
-    mime_type = AUDIO_FORMAT_MIME_TYPES.get(response_format.lower(), "audio/mpeg")
+    mime_type = ("application/octet-stream" if response_format == "pcm"
+                 else AUDIO_FORMAT_MIME_TYPES.get(response_format.lower(), "audio/mpeg"))
 
     try:
         # Generate speech using TTSHandler and return the audio file
@@ -151,9 +153,12 @@ def text_to_speech():
             response_format=response_format,
             speed=speed
         )
-        return _send_and_delete(
+        response = _send_and_delete(
             output_file_path, mime_type, f"speech.{response_format}"
         )
+        if response_format == "pcm":
+            response.headers["X-Audio-Encoding"] = "s16le"
+        return response
     except ValueError as e:
         logging.error(f"ValueError during TTS generation: {e}")
         return jsonify({"error": str(e)}), 400
@@ -283,13 +288,18 @@ def text_to_speech_stream():
     if voice not in tts_handler.available_models:
         return jsonify({"error": f"Voice '{voice}' is not available."}), 400
 
+    l16 = explicit_l16_accepted(request.headers.get("Accept", ""))
     chunks = tts_handler.generate_speech_stream(text, voice, speed)
     try:
         first = next(chunks, None)
+        if first is not None and l16:
+            first = pcm_le_to_l16(first)
     except ValueError as e:
+        chunks.close()  # Also release upstream resources on invalid L16 sample width.
         logging.error(f"Stream ValueError: {e}")
         return jsonify({"error": str(e)}), 400
     except Exception as e:
+        chunks.close()
         logging.error(f"Stream failed before first audio chunk: {e}")
         return jsonify({"error": "Failed to generate speech"}), 500
 
@@ -308,7 +318,7 @@ def text_to_speech_stream():
                 chunk = next(chunks, None)
                 if chunk is None:
                     break
-                yield chunk
+                yield pcm_le_to_l16(chunk) if l16 else chunk
         except Exception as e:  # headers already sent: truncate cleanly, keep earlier audio
             logging.error(f"Stream aborted mid-response: {e}")
         finally:
@@ -317,13 +327,14 @@ def text_to_speech_stream():
     headers = {
         'X-Sample-Rate': str(STREAM_SAMPLE_RATE),
         'X-Audio-Channels': '1',
-        'X-Audio-Encoding': 'int16',
+        'X-Audio-Encoding': 's16be' if l16 else 's16le',
         'Cache-Control': 'no-store',
         'X-Accel-Buffering': 'no',  # stop nginx buffering the chunked response
     }
     return Response(
         body(),
-        content_type=f'audio/L16; rate={STREAM_SAMPLE_RATE}; channels=1',
+        content_type=(f'audio/L16; rate={STREAM_SAMPLE_RATE}; channels=1' if l16
+                      else 'application/octet-stream'),
         headers=headers,
     )
 

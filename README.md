@@ -373,7 +373,7 @@ Primary route for generating speech from text input. With the default `REQUIRE_A
   - `speed` (number, optional): Between `0.25` and `4` inclusive; defaults to `DEFAULT_SPEED` (`1.0` unless configured otherwise).
   - `ref_audio`: **Not implemented as a per-request override.** Reference audio is resolved from the voice name under `ref_audio/`; omitting this field is recommended.
 
-- **Response**: An audio file in the specified format.
+- **Response**: An audio file in the specified format. For `response_format: "pcm"`, the file contains raw little-endian PCM16 with `Content-Type: application/octet-stream` and `X-Audio-Encoding: s16le` (no WAV header or sample-rate metadata).
 
 **Example:**
 
@@ -400,11 +400,11 @@ The input text is split into sentences by a small built-in splitter (no NLTK and
   - `voice` (string, optional): Voice model to use (default: `Emilia`).
   - `speed` (float, optional): Speed factor (default: `1.0`).
 - **Response**:
-  - `Content-Type: audio/L16; rate=16000; channels=1`
-  - `X-Sample-Rate: 16000`
-  - `X-Audio-Channels: 1`
-  - `X-Audio-Encoding: int16`
-  - Body: raw little-endian int16 PCM, one chunk per sentence.
+  - **Default:** `Content-Type: application/octet-stream`, `X-Audio-Encoding: s16le`; body remains raw little-endian signed PCM16 at 16 kHz.
+  - **Explicit opt-in:** send `Accept: audio/L16` for genuine network-order big-endian signed PCM16 and `Content-Type: audio/L16; rate=16000; channels=1`, `X-Audio-Encoding: s16be`.
+  - Both modes include `X-Sample-Rate: 16000` and `X-Audio-Channels: 1`. Each sentence contributes a chunk.
+
+**MIME migration:** Previously this endpoint returned little-endian PCM while incorrectly labeling it `audio/L16`. Existing little-endian payload bytes are preserved by default, but the default media type changes; clients that relied on the incorrect header must adjust. `Accept: */*` does not opt into L16. Use `python scripts/stream_client.py --l16` to request correctly encoded big-endian L16 and convert to little-endian WAV. Without the flag, the client retains original little-endian playback.
 
 ```bash
 curl -X POST http://localhost:9090/v1/audio/speech/stream \

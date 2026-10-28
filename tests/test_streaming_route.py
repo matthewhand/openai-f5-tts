@@ -53,6 +53,14 @@ def client(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["server.py"])
     for name in ("server", "utils", "tts_handler"):
         sys.modules.pop(name, None)
+    # Route tests do not use native Gevent; stub imports to keep these offline.
+    fake_gevent = type(sys)("gevent")
+    fake_gevent.__path__ = []
+    fake_pywsgi = type(sys)("gevent.pywsgi")
+    fake_pywsgi.WSGIServer = object
+    fake_pywsgi.WSGIHandler = object
+    monkeypatch.setitem(sys.modules, "gevent", fake_gevent)
+    monkeypatch.setitem(sys.modules, "gevent.pywsgi", fake_pywsgi)
     fake_mod = type(sys)("tts_handler")
     fake_mod.TTSHandler = FakeTTS
     monkeypatch.setitem(sys.modules, "tts_handler", fake_mod)
@@ -98,11 +106,10 @@ def test_unknown_voice_is_http_400_not_empty_200(client):
 def test_headers_describe_the_pcm(client):
     r = client.post(URL, json={"input": "One. Two."}, headers=AUTH)
     assert r.status_code == 200
-    assert r.headers["Content-Type"].startswith("audio/L16")
-    assert "rate=16000" in r.headers["Content-Type"]
+    assert r.headers["Content-Type"].startswith("application/octet-stream")
     assert r.headers["X-Sample-Rate"] == "16000"
     assert r.headers["X-Audio-Channels"] == "1"
-    assert r.headers["X-Audio-Encoding"] == "int16"
+    assert r.headers["X-Audio-Encoding"] == "s16le"
 
 
 def test_body_is_concatenated_chunks(client):
