@@ -80,6 +80,6 @@ AUDIO_FORMAT_MIME_TYPES = json.loads(os.getenv("AUDIO_FORMAT_MIME_TYPES", """
     "aac": "audio/aac",
     "flac": "audio/flac",
     "wav": "audio/wav",
-    "pcm": "audio/L16"
+    "pcm": "application/octet-stream"
 }
 """))

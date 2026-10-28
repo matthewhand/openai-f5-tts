@@ -610,7 +610,7 @@ class TTSHandler:
                 if final_sample_rate != 16000:
                     audio = librosa.resample(audio, orig_sr=final_sample_rate, target_sr=16000)
 
-                pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+                pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2")
                 yield pcm.tobytes()
         except GeneratorExit:
             logging.info(f"Client disconnected — stopping stream for voice '{voice}'.")
