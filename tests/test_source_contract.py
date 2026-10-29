@@ -144,6 +144,93 @@ class SourceContractTests(unittest.TestCase):
         self.assertEqual(requests[0][2]["Accept"], "audio/L16")
         self.assertEqual(output, [b"\x02\x01\xfe\xff"])
 
+    def test_readme_authenticated_route_inventory_tracks_server(self):
+        """A newly added API route must update the documented auth count."""
+        server = ast.parse(self.read("app/server.py"))
+        handlers = []
+        for fn in server.body:
+            if not isinstance(fn, ast.FunctionDef):
+                continue
+            routes = [dec for dec in fn.decorator_list
+                      if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
+                      and isinstance(dec.func.value, ast.Name)
+                      and dec.func.value.id == "app" and dec.func.attr == "route"]
+            if routes:
+                self.assertIn("require_api_key", [dec.id for dec in fn.decorator_list
+                                                  if isinstance(dec, ast.Name)])
+                handlers.append(fn.name)
+        readme = self.read("README.md")
+        self.assertIn(f"all {len(handlers)} HTTP routes", readme)
+        self.assertIn("/v1/audio/speech/stream`, and `/v1/text-to-speech/", readme)
+        self.assertIn("REQUIRE_API_KEY=False", readme)
+        self.assertIn("numeric loopback", readme)
+        # Each API endpoint has one authoritative section; a duplicate heading
+        # silently creates ambiguous markdown navigation links.
+        endpoint_headings = [line for line in readme.splitlines()
+                             if line.startswith("### `/v1/")]
+        self.assertEqual(len(endpoint_headings), len(set(endpoint_headings)))
+        self.assertEqual(readme.count("### `/v1/loaded_models`"), 1)
+
+    def test_readme_shared_synthesis_admission_and_stream_cleanup(self):
+        readme = self.read("README.md")
+        source = self.read("app/server.py")
+        handler = self.read("app/tts_handler.py")
+        validator = self.read("app/request_validation.py")
+        self.assertIn("all three synthesis endpoints return HTTP `503`", readme)
+        self.assertIn("All three speech endpoints", readme)
+        self.assertIn("MAX_REQUEST_BYTES", readme)
+        self.assertIn("MAX_TEXT_CHARS", readme)
+        self.assertIn("response.call_on_close(chunks.close)", source)
+        self.assertEqual(handler.count("with self._generation_gate.claim():"), 2)
+        for name in ("parse_speech_request", "parse_timestamp_request", "parse_stream_request"):
+            self.assertIn(name + "(", source)
+        self.assertIn("max_text_chars=MAX_TEXT_CHARS", source)
+        self.assertIn("def parse_stream_request(", validator)
+        self.assertIn("before body iteration", readme)
+        self.assertIn("cross-process", readme)
+
+    def test_readme_pcm_headers_and_timestamp_profiles_follow_source(self):
+        readme = self.read("README.md")
+        server = self.read("app/server.py")
+        contract = self.read("app/pcm_contract.py")
+        self.assertIn("application/octet-stream", readme)
+        self.assertIn("X-Audio-Encoding: s16le", readme)
+        self.assertIn("audio/L16; rate=16000; channels=1", readme)
+        self.assertIn("X-Audio-Encoding: s16be", readme)
+        self.assertIn("Accept: */*", readme)
+        self.assertIn("explicit_l16_accepted", server)
+        self.assertIn("pcm_le_to_l16", server)
+        self.assertIn('media.strip().lower() != "audio/l16"', contract)
+
+        validation = ast.parse(self.read("app/request_validation.py"))
+        profiles = None
+        for assign in validation.body:
+            if isinstance(assign, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "STRICT_TIMESTAMP_PROFILES"
+                for target in assign.targets
+            ):
+                profiles = ast.literal_eval(assign.value)
+        self.assertIsNotNone(profiles)
+        for name in profiles:
+            with self.subTest(profile=name):
+                self.assertIn("`" + name + "`", readme)
+        for legacy in ("mp3_44100_128", "ogg_48000_128", "wav_44100_128"):
+            self.assertIn("`" + legacy + "`", readme)
+        self.assertIn("codec selectors only", readme)
+        self.assertIn("encoding_profile", readme)
+
+    def test_readme_privacy_scope_and_historical_evidence_remain_distinct(self):
+        readme = self.read("README.md")
+        server = self.read("app/server.py")
+        handler = self.read("app/tts_handler.py")
+        for text in ("14 October 2026", "20 October 2026", "28 October 2026",
+                     "223 passed, 197 subtests", "zero skips", "loopback",
+                     "third-party logger", "reverse-proxy", "no pretrained weights"):
+            with self.subTest(text=text):
+                self.assertIn(text.lower(), readme.lower())
+        self.assertIn("log=None, error_log=None", server)
+        self.assertIn("_upstream_infer_module.print = _discard_upstream_print", handler)
+
     def test_no_hosted_workflow_is_introduced(self):
         workflow_dir = ROOT / ".github" / "workflows"
         self.assertFalse(workflow_dir.exists() and list(workflow_dir.iterdir()))
