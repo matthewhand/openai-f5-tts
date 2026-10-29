@@ -2,7 +2,7 @@
 
 <img src="assets/images/logo.webp" alt="Project Logo" width="200"/>
 
-**Release status: SOHO-oriented community beta, verified on one machine (20 October 2026).** This independently developed API wrapper exposes upstream F5-TTS through an OpenAI-style speech route, sentence streaming, voice discovery and estimated timestamps. Real NVIDIA GPU inference was verified in Docker Desktop with installed v0 and v1 checkpoints. Use sequential requests on a trusted system; simultaneous streaming, CPU-only operation and cold dependency installation remain unverified. This project is not affiliated with OpenAI or the upstream F5-TTS authors. See the [verification report](docs/verification-2026-10-20.md).
+**Release status: SOHO-oriented community beta, verified on one machine (20 October 2026).** This independently developed API wrapper exposes upstream F5-TTS through an OpenAI-style speech route, sentence streaming, voice discovery and estimated timestamps. Real NVIDIA GPU inference was verified in Docker Desktop with installed v0 and v1 checkpoints. Use sequential requests on a trusted system; model-backed simultaneous streaming, model-backed CPU inference and cold dependency installation remain unverified; newer synthetic native tests are described below. This project is not affiliated with OpenAI or the upstream F5-TTS authors. See the [verification report](docs/verification-2026-10-20.md).
 
 ---
 
@@ -20,7 +20,9 @@
   - [POST /v1/audio/speech/stream](#v1audiospeechstream)
   - [GET /v1/models](#v1models)
   - [GET /v1/voices](#v1voices)
+  - [POST /v1/text-to-speech/{voice}/with-timestamps](#v1text-to-speechvoicewith-timestamps)
   - [GET /v1/voices/all](#v1voicesall)
+  - [GET /v1/loaded_models](#v1loaded_models)
 - [Streaming Test Client](#streaming-test-client)
 - [Adding Your Own Fine-Tuned Checkpoint](#adding-your-own-fine-tuned-checkpoint)
 - [TODO](#todo)
@@ -64,7 +66,7 @@ diagram requires `Authorization: Bearer <API_KEY>` when authentication is enable
 The streaming client needs PCM playback support; this route sends chunked HTTP
 audio rather than an MP3 file or server-sent events.
 
-**Multiple voices are selectable per request in both modes.** Each installed voice
+**Multiple voices are selectable per request in all three speech modes.** Each installed voice
 needs a checkpoint directory under `ckpts/<voice>/` and matching reference audio
 under `ref_audio/<voice>.<extension>`. Discover names with `GET /v1/voices`, then
 send the chosen name in the `voice` field.
@@ -79,9 +81,10 @@ checkpoint and matching reference audio described in the setup instructions.
 |---|---|---|
 | Complete audio file | `POST /v1/audio/speech` | `{"input":"Hello from Emilia.","voice":"Emilia","response_format":"mp3"}` |
 | Sentence streaming | `POST /v1/audio/speech/stream` | `{"input":"Hello from Emilia. This is the next sentence.","voice":"Emilia"}` |
+| Estimated timestamps | `POST /v1/text-to-speech/Emilia/with-timestamps` | `{"text":"Hello from Emilia."}` |
 
-Any correctly configured installed voice can be used with either endpoint. The timestamp route also
-selects its voice, in `POST /v1/text-to-speech/<voice>/with-timestamps`.
+Any correctly configured installed voice can be used with all three speech endpoints.
+For timestamps, the voice is selected in the URL path rather than the JSON body.
 
 `MODEL_LOAD_LIMIT` controls how many checkpoints remain loaded, **not** how many
 voices can be installed or selected. Its default is `1`: switching voices evicts
@@ -89,8 +92,8 @@ the previous checkpoint and loads the requested one. A larger limit can keep mor
 voices warm if GPU memory permits, but does not enable safe simultaneous synthesis.
 Whisper, the vocoder and inference workspace also use memory.
 
-Use one synthesis request at a time across both modes. Ordinary, timestamped and
-streaming synthesis now share a process-local generation gate; competing requests
+Use one synthesis request at a time across all three speech modes. Ordinary, timestamped and
+streaming synthesis share a process-local generation gate; competing requests
 return HTTP 503. Streaming keeps its lease through delivery and closes it on a
 WSGI response close or disconnect (synthetic regression verified). This is **not**
 a multi-process or distributed GPU lock. For parallel voice jobs, use an application
@@ -101,11 +104,11 @@ queue or isolated service instances with separately managed model caches.
 - `POST /v1/audio/speech` generates audio using an installed F5-TTS checkpoint, a matching reference-audio file and a locally loaded Whisper transcription model. The documented `speed` parameter reaches the inference call; supported conversions use FFmpeg.
 - `GET /v1/models`, `GET /v1/voices`, `GET /v1/voices/all` and `GET /v1/loaded_models` are authenticated. Voice language metadata is **not** implemented; `/v1/voices?language=...` or `?locale=...` currently returns an empty `voices` list for nonempty filters, not a working language-filtered result.
 - `POST /v1/text-to-speech/{voice}/with-timestamps` returns base64 audio and, where duration can be read, **duration-weighted estimated timings**, *not* forced alignment. Null alignment is possible.
-- Sentence streaming is implemented on `main` at `POST /v1/audio/speech/stream`, with one synthesized sentence sent at a time as 16 kHz mono signed int16 little-endian PCM. It was verified with real GPU inference; see the [verification report](docs/verification-2026-10-20.md).
+- Sentence streaming is implemented on `main` at `POST /v1/audio/speech/stream`, with one synthesized sentence sent at a time as 16 kHz mono signed int16 little-endian PCM **by default**, or network-order big-endian when `Accept: audio/L16` is explicitly requested. Historical little-endian streaming was verified with real GPU inference; see the [verification report](docs/verification-2026-10-20.md).
 - The Compose setup currently requires NVIDIA GPU container support and mounts local checkpoint and reference-audio folders. The installer pulls an **unpinned** upstream F5-TTS dependency; reproducible builds have not been demonstrated.
 - **Checkpoint path-trust guard (source-only verified):** discovery now checks that the configured checkpoint root and its ancestors are not symlinks, and that voice directories and selected `.safetensors` files are real directories / singly linked regular files, not symlinks or hardlinks. Immediately before loading a previously discovered voice, the path is checked again **before any loaded model is evicted**. A stale or substituted path fails without invoking the model loader. Keep the checkpoint tree trusted and immutable to less-privileged writers: pathname checks cannot eliminate **replacement races** between validation and the upstream loader opening the file. This does **not** prove file authenticity, content format, signature, integrity, permission confinement or licensing. Checkpoint-substitution attacks during live inference and Windows-native path behavior remain unverified; ordinary Docker inference is covered by the verification report.
 - **Checkpoint loading is native-safetensors-only.** The wrapper discovers `model_1250000.safetensors` first, or `model_1200000.safetensors`; it does **not** deserialize or automatically convert legacy pickle-based `.pt` files. Users with only `.pt` checkpoints must obtain a genuine `.safetensors` export from a trusted offline training/export environment before using this branch. Do not simply rename a `.pt` file.
-- Incoming JSON request bodies are bounded by `MAX_REQUEST_BYTES` (default 65536). Ordinary synthesis and timestamp requests additionally enforce `MAX_TEXT_CHARS` (default 2000); speed must be between 0.25 and 4. Their **process-local, non-blocking single-generation gate** covers model inference and audio conversion and raises HTTP **503** when occupied. Streaming now shares that gate and character-limit validator (synthetic offline tested). This is not a cross-process or cluster-wide limit. Wrapper HTTP/body/credential debug logging has been removed and Gevent request/exception access logging is configured off. Direct Python `print` output in the imported upstream F5-TTS inference module is discarded by a module-local print override, including its known reference-text, generated-text and checkpoint-path statements. This does not sanitize native file-descriptor writes, third-party logger handlers, future upstream changes or fronting reverse-proxy logs; those require separate operational controls and review after dependency updates.
+- Incoming JSON request bodies are bounded by `MAX_REQUEST_BYTES` (default 65536). **All three speech endpoints** additionally enforce `MAX_TEXT_CHARS` (default 2000), voice names of at most 128 characters and finite speed from 0.25 to 4 inclusive. The **process-local, non-blocking single-generation gate** covers ordinary, timestamped and streaming synthesis (including active stream delivery), returning HTTP **503** on contention. A stream releases its lease on completion, disconnect, pre-header failure or WSGI response close even before body iteration (synthetic offline tested). This is not a cross-process or cluster-wide limit. Wrapper HTTP/body/credential debug logging has been removed and Gevent request/exception access logging is configured off. Direct Python `print` output in the imported upstream F5-TTS inference module is discarded by a module-local print override, including its known reference-text, generated-text and checkpoint-path statements. This does not sanitize native file-descriptor writes, third-party logger handlers, future upstream changes or fronting reverse-proxy logs; those require separate operational controls and review after dependency updates.
 - The Python wrapper is MIT-licensed. **Upstream pretrained F5-TTS model weights are CC-BY-NC** per [SWivid/F5-TTS licensing](https://github.com/SWivid/F5-TTS#license); this repository's MIT license does not grant commercial rights to those weights. Check any reference-audio and voice rights separately.
 
 
@@ -124,8 +127,8 @@ queue or isolated service instances with separately managed model caches.
 - The model cache is a **bounded in-process LRU**, not persistent storage. A voice switch may evict the least recently used model *before* allocating the next model to limit peak memory; if a new checkpoint fails to load, the evicted model is **not automatically restored**. A later authorized request can reload it from disk. Never interpret discovery or a `loaded` flag as successful speech generation.
 - A failed load must leave **no partially registered model** in `loaded_models`. `MODEL_LOAD_LIMIT` must be a positive integer; a bad configuration should fail during startup instead of failing mid-request.
 - On a failed checkpoint load (including a `None` result), the handler now attempts **best-effort** Python garbage collection and CUDA allocator cache release before re-raising the *original* error. Cleanup errors cannot hide that loading failure. The evicted voice is **not automatically restored**; subsequent authorized requests can retry. Synthetic CPU/CUDA mocks cover failure, retry and secondary cleanup exceptions, but **no live GPU memory-recovery guarantee exists**.
-- The published `/v1/models`, `/v1/voices`, `/v1/voices/all`, `/v1/loaded_models`, `/v1/audio/speech`, and `/v1/text-to-speech/{voice}/with-timestamps` routes require `Authorization: Bearer <key>` or `xi-api-key: <key>` when `REQUIRE_API_KEY=True`. Missing or invalid keys should return **401**, including malformed/non-ASCII token values; no secret should be echoed into logs or responses.
-- When `REQUIRE_API_KEY=True` (default), a non-placeholder API key is **required at import/startup** and all six HTTP routes enforce Bearer or `xi-api-key` authentication. Setting `REQUIRE_API_KEY=False` is intended **only** for explicit numeric loopback binding (`HOST=127.0.0.1` / `--host 127.0.0.1`, or `::1` on IPv6). A wildcard `0.0.0.0` / `::`, LAN IP, DNS hostname including `localhost`, or any ambiguous address must cause a startup error **before** TTS handler construction. This is a process bind safeguard, not reverse-proxy or host-network isolation; do not expose unauthenticated mode beyond your own machine.
+- The published `/v1/models`, `/v1/voices`, `/v1/voices/all`, `/v1/loaded_models`, `/v1/audio/speech`, `/v1/audio/speech/stream`, and `/v1/text-to-speech/{voice}/with-timestamps` routes require `Authorization: Bearer <key>` or `xi-api-key: <key>` when `REQUIRE_API_KEY=True`. Missing or invalid keys should return **401**, including malformed/non-ASCII token values; no secret should be echoed into logs or responses.
+- When `REQUIRE_API_KEY=True` (default), a non-placeholder API key is **required at import/startup** and all 7 HTTP routes enforce Bearer or `xi-api-key` authentication. Setting `REQUIRE_API_KEY=False` is intended **only** for explicit numeric loopback binding (`HOST=127.0.0.1` / `--host 127.0.0.1`, or `::1` on IPv6). A wildcard `0.0.0.0` / `::`, LAN IP, DNS hostname including `localhost`, or any ambiguous address must cause a startup error **before** TTS handler construction. This is a process bind safeguard, not reverse-proxy or host-network isolation; do not expose unauthenticated mode beyond your own machine.
 - The offline Flask test-client suite exercises the **actual Flask routes and authentication decorator** while replacing Gevent and model startup with inert fixtures. It verifies Bearer and `xi-api-key` headers, missing/invalid/non-ASCII key rejection (401), explicit optional authentication bypass **without an API key**, enabled-mode placeholder-key rejection, invalid bodies (400), oversized bodies (413) and synthetic busy responses (503). The fixture's busy exception is tied to the same class imported by the server, eliminating a standalone-versus-full-suite import-order false failure. No socket or inference is used; production reverse-proxy behavior remains unverified.
 
 ### Concurrency and temporary-file status
@@ -359,7 +362,7 @@ With this explicit loopback bind, the API will be accessible at `http://127.0.0.
 
 ## API Endpoints
 
-**Busy behavior:** both synthesis endpoints return HTTP `503` and `{"error": "Speech generator busy; try again later"}` if another request already owns the single local generation slot. Non-speech list endpoints are unaffected. This behavior is only process-local.
+**Busy behavior:** all three synthesis endpoints return HTTP `503` and `{"error": "Speech generator busy; try again later"}` if another request already owns the single local generation slot. Non-speech list endpoints are unaffected. This behavior is only process-local.
 
 ### `/v1/audio/speech`
 
@@ -416,6 +419,8 @@ curl -X POST http://localhost:9090/v1/audio/speech/stream \
      > output.pcm
 ```
 
+To request network-order L16 explicitly instead of the default little-endian PCM, add `-H "Accept: audio/L16"` to the streaming `curl` command above and save the bytes as `output.l16`. Decode those samples as **big-endian signed 16-bit**; do not treat the raw file as a WAV container.
+
 > **Note**: Full per-sentence inference is required before each sentence can be sent. First-audio latency includes model loading and reference processing when needed. The local two-sentence checks observed first audio at 2.813 seconds for Scarlett and 14.812 seconds for the initial Emilia stream; these are individual observations, not latency guarantees.
 
 ### `/v1/models`
@@ -449,6 +454,8 @@ Optional ElevenLabs-shaped route (not a promise of ElevenLabs interoperability):
 | `mp3_44100_128_strict` | MP3, 44.1 kHz mono, 128 kbps nominal CBR |
 | `ogg_48000_128_strict` | Ogg Opus, 48 kHz mono, 128 kbps constant codec target (container overhead excluded) |
 | `wav_44100_pcm16_strict` | WAV, 44.1 kHz mono signed PCM16; uncompressed audio is 705.6 kbps, not 128 kbps |
+
+For an enforced MP3 profile, use `POST /v1/text-to-speech/Emilia/with-timestamps?output_format=mp3_44100_128_strict` with `Content-Type: application/json`, `Authorization: Bearer <API_KEY>` and a body such as `{"text":"Hello from Emilia."}`. The JSON `audio_base64` contains the encoded audio, not raw PCM; the response includes `encoding_profile` for strict requests.
 
 The strict names add an `encoding_profile` field to the timestamp response. Unknown strict aliases return HTTP 400. Exact measured container bitrate can differ from encoder nominal bitrate; use media inspection for verification. Ordinary `mp3`, `wav`, `ogg` etc. and existing legacy aliases retain their previous behavior; no implicit profile change is performed.
 
@@ -580,7 +587,7 @@ curl -X POST http://localhost:9090/v1/audio/speech \
 
 ## Local offline regression checks
 
-Without downloading models, building containers or sending HTTP requests, run from the repository root:
+Without downloading models, building containers or contacting external services, run these source/mock checks from the repository root:
 
 ```bash
 python -m unittest discover -s tests -p 'test_request_validation.py' -v
@@ -593,6 +600,16 @@ python -m unittest discover -s tests -p 'test_reference_ffmpeg_timeout.py' -v
 ```
 
 Run all local low-load synthetic regressions with `PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s tests -p 'test_*.py' -v` (110 tests passed in an isolated source-only workspace on 14 October 2026, including reference-audio and cache symlink/hardlink/path-swap regressions, checkpoint path-trust checks, startup-binding and real-Flask tests; no models, real FFmpeg or inference). These cover pure input validation, mock CLI behavior, generation admission, bounded HTTP audio reads and oversize 503 responses, fake FFmpeg timeouts and reference-cache cleanup, source contracts, **real Flask test-client authentication**, and AST-extracted cache-load/eviction recovery. The Flask integration suite skips when Flask is not already installed; no package installation is needed for the other tests. The startup-binding checks use real Flask imports with inert Gevent and model fixtures; they never open a socket. No actual FFmpeg binary, real model loading/inference, working Docker build, reverse proxy or synthesized audio was validated. No GitHub Actions workflows exist in this repository and this project is not configured to run hosted CI.
+
+**Newer acceptance evidence (28 October 2026, merged PR #24):** an isolated disposable environment with real Gevent and CPU-only Torch ran `223 passed, 197 subtests` with zero skips. This included synthetic model-boundary tests, real CPU Torch streaming lifecycle checks, a fictional loopback Gevent request/access-log privacy check and offline FFmpeg format tests. No pretrained weights, live synthesis, hosted CI or deployment were used. This result does **not** establish CPU model-backed inference, real concurrent GPU behavior, fully sanitized upstream/native logs, a reproducible cold build or a reverse-proxy privacy guarantee. See issues #20 and #21 for remaining verification and dependency reproducibility. The dated 14 October source-only result and 20 October Docker GPU verification report above are separate historical evidence, not replaced by this suite.
+
+To rerun the full current suite when `pytest`, Flask and optional native test dependencies are installed locally, without model downloads or external HTTP requests:
+
+```bash
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 WANDB_MODE=disabled PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -B -m pytest -q -rs -p no:cacheprovider tests
+```
+
+Native Gevent privacy coverage sends **one fictional HTTP request to loopback only**; the source/mock tests above do not contact external services. On a lightweight environment lacking Gevent or Torch, dependency-dependent native tests may skip and must not be counted as native acceptance. Full model-backed inference requires separately licensed model assets and independent verification.
 
 The optional CLI launcher is `python f5_tts_app/cli.py --host 127.0.0.1 --port 9090`; it launches the same API server and therefore still needs all models and dependencies installed.
 
