@@ -611,6 +611,8 @@ HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 WANDB_MODE=disabled PYTHONDONTWRITEBYTEC
 
 Native Gevent privacy coverage sends **one fictional HTTP request to loopback only**; the source/mock tests above do not contact external services. On a lightweight environment lacking Gevent or Torch, dependency-dependent native tests may skip and must not be counted as native acceptance. Full model-backed inference requires separately licensed model assets and independent verification.
 
+**Newer issue #20 native verification (30 October 2026):** see [the separate ARM64 Gevent/Torch offline acceptance report](docs/verification-2026-10-30-offline.md) for exact dependency versions, bounded results, real local-only WSGI close/disconnect checks and remaining limits. The model-backed October 20 report and the October 28 PR #24 baseline remain separate evidence.
+
 The optional CLI launcher is `python f5_tts_app/cli.py --host 127.0.0.1 --port 9090`; it launches the same API server and therefore still needs all models and dependencies installed.
 
 ## Support
