@@ -1,0 +1,9 @@
+# Compatibility candidates for Python 3.10 / linux-amd64; NOT a full transitive lock.
+# Torch and torchaudio use exact local-build flavor (+cpu / +cu124) in Dockerfile.
+# TorchCodec 0.1.x is paired with torch 2.5 in upstream compatibility guidance.
+# Changes require fresh metadata inspection, clean build, pip check and testing.
+torch==2.5.1
+torchaudio==2.5.1
+torchcodec==0.1.1
+transformers==4.46.2
+tokenizers==0.20.3

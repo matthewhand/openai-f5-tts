@@ -166,6 +166,8 @@ cython_debug/
 *.mp3
 *.wav
 *.txt
+# Build inputs must be committed; prevent local-only tests masking broken builds.
+!constraints/py310-torch25.txt
 *.pt
 F5-TTS/
 

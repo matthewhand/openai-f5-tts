@@ -1,10 +1,9 @@
-git+https://github.com/SWivid/F5-TTS.git
+git+https://github.com/SWivid/F5-TTS.git@600e5fdfbf319f84735557aca80a7aaf60d487e6
 flask
 gevent
 python-dotenv
 transformers>=4.46.2,<5.0.0
 tokenizers>=0.20.3,<1.0.0
-transformers>=4.46.2
 torch>=2.0.0
 librosa>=0.9.2
 soundfile>=0.11.0
