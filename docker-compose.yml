@@ -1,7 +1,10 @@
 services:
   app:
     container_name: openai-f5-tts
-    build: .
+    build:
+      context: .
+      args:
+        TORCH_CHANNEL: ${TORCH_CHANNEL:-cu124}
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all  # Use all available GPUs

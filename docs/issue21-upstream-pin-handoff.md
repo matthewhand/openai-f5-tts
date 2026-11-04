@@ -18,10 +18,18 @@
 
 ## Unmet acceptance gates — mandatory for issue #21
 
-- Python and transitive dependencies are **not yet locked**. The Dockerfile still upgrades pip and installs packages from dynamic indexes.
-- Existing `Dockerfile`/`docker-compose.yml` use NVIDIA/CUDA-oriented settings and a second unpinned Torch/Torchaudio install from an extra index, which can replace the resolver's earlier selection. CPU and CUDA compatibility is **unverified**.
-- The Docker base tag is not pinned to an image digest; no authenticated, clean cold build, output image digest or dependency inventory has been measured.
+- Python and transitive dependencies are **not yet fully locked**. `constraints/py310-torch25.txt` is a small compatibility candidate, not a hash-locked complete resolution; dynamic transitive dependencies and OS packages remain.
+- The Dockerfile now selects one explicit pinned PyTorch/Torchaudio wheel channel, and NVIDIA Compose opts into `cu124`, but **neither flavor has been verified in a clean image build**. Upstream dependency compatibility is also unverified.
+- The Python Bookworm base manifest digest has now been pinned (remote manifest inspected only). There is **no measured cold build, final image digest or complete dependency inventory**.
 - The full tests, GPU/runtime compatibility and independent security/privacy complete-diff acceptance for a final buildable candidate remain outstanding.
 - Operator-provided `/app/ckpts` and `/app/ref_audio` must remain external runtime-mounted data and must not be embedded in any build context or image.
 
 **Do not close issue #21 or squash merge this source-only checkpoint as if all acceptance gates passed.** The hosted CI system is not a required gate, but locally observed clean builds and genuine independent review are.
+
+## 5 November source-only Torch build-contract update
+
+The Dockerfile now pins a Docker Hub Python 3.10 Bookworm manifest-list digest, requires `linux/amd64`, installs `torch==2.5.1+cpu` and `torchaudio==2.5.1+cpu` from the PyTorch CPU wheel index by default, and switches **both** to `+cu124` only when explicitly requested. The NVIDIA Compose file retains its existing NVIDIA runtime and chooses `cu124` as its build argument; it is **not** a CPU-only deployment configuration. A single compatible constraints file applies to the upstream installation, and an installed-version check rejects accidental channel replacement. TorchCodec 0.1.x is constrained based on upstream PyTorch/TorchCodec compatibility guidance.
+
+The exact observed Python image manifest index digest on 5 November was `sha256:5be5aaecb962a41567bc8041f1e9e3432cb085b037fe057f9a562630b2e4b370`; the observed `linux/amd64` child manifest was `sha256:db6ee5170ebce0f4d165af242e8e77addc08bd9ffc37e8b1815752cf027aa4f8`. Public metadata inspection established candidate wheel availability for Python 3.10, but **did not download wheels or run the full resolver**. The chosen TorchCodec/Transformers combination is still a candidate until a real isolated cold build and `pip check` pass. The pinned Python image digest is not the digest of a built F5-TTS image. No GPU inference, NVIDIA runtime or full dependency lock was tested.
+
+`docker build --build-arg TORCH_CHANNEL=cpu` and `docker build --build-arg TORCH_CHANNEL=cu124` are the intended **future** isolated build checks, not commands run for this checkpoint. Do not execute either against the busy shared Ubuntu-Max Docker daemon; preserve a safe storage reserve, an isolated build root, and all operator-provided voice assets.

@@ -11,3 +11,19 @@ __pycache__
 _navbar-xfer
 _reachy-webui
 F5-TTS
+
+# Defense in depth: nested operator secrets/models/voice audio must never enter
+# the Docker build context (even when the Dockerfile only COPYs app/).
+**/.env
+**/.env.*
+**/ckpts/**
+**/ref_audio/**
+**/cache/**
+**/*.safetensors
+**/*.ckpt
+**/*.pt
+**/*.wav
+**/*.mp3
+**/*.flac
+**/*.pcm
+**/*.pem

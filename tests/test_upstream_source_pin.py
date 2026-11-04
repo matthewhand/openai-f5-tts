@@ -21,7 +21,7 @@ class DependencyPinContracts(unittest.TestCase):
         note = (ROOT / "docs" / "issue21-upstream-pin-handoff.md").read_text()
         self.assertIn("NOT a complete reproducible build", note)
         self.assertIn("Unmet acceptance gates", note)
-        self.assertIn("not yet locked", note)
+        self.assertIn("not yet fully locked", note)
 
 
 if __name__ == "__main__":
