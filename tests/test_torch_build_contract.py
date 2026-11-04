@@ -1,6 +1,8 @@
 """Offline source guarantees: a fail-closed single-channel PyTorch build."""
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +44,16 @@ class TorchBuildContract(unittest.TestCase):
             self.assertIn(exact, constraints)
         self.assertTrue(all(re.fullmatch(r"[A-Za-z0-9_.-]+==[A-Za-z0-9_.+-]+", x)
                             for x in constraints))
+
+    def test_constraints_in_git_checkout(self):
+        # A local ignored file can make source tests pass but break a clean Docker build.
+        if not (ROOT / ".git").exists() or shutil.which("git") is None:
+            self.skipTest("Git index unavailable in source archive")
+        result = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", "--", "constraints/py310-torch25.txt"],
+            cwd=ROOT, text=True, capture_output=True, check=False, timeout=5,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr or "constraints not tracked")
 
     def test_compose_keeps_nvidia_default_channel(self):
         compose = (ROOT / "docker-compose.yml").read_text()
