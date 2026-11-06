@@ -1,3 +1,5 @@
+![An OpenAI-compatible TTS API runs the F5-TTS model to generate speech](docs/assets/openai-f5-tts-banner.png)
+
 # openai-f5-tts
 
 <img src="assets/images/logo.webp" alt="Project Logo" width="200"/>
