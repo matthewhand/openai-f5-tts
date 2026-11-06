@@ -1,4 +1,4 @@
-![An OpenAI-compatible TTS API runs the F5-TTS model to generate speech](docs/assets/openai-f5-tts-banner.png)
+![A client app sends text to the TTS API backed by the F5-TTS model and receives audio](docs/assets/openai-f5-tts-banner.png)
 
 # openai-f5-tts
 
